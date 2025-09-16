@@ -19,7 +19,6 @@ INPUT_BG    = "#2d2d2d"
 FG          = "#e6e6e6"
 MUTED       = "#9aa0a6"
 ACCENT      = "#0a84ff"   # Run
-DANGER      = "#ff3b30"   # Stop
 BORDER      = "#3c3c3c"
 
 # ---------------- Network helpers ----------------
@@ -33,86 +32,39 @@ def normalize_host(s: str) -> str:
 
 def check_server_or_raise(host_text: str) -> str:
     host = normalize_host(host_text)
-    try:
-        r = requests.get(f"{host}/object_info", timeout=5)
-        r.raise_for_status()
-        return host
-    except requests.exceptions.RequestException as e:
-        raise RuntimeError(f"Cannot reach ComfyUI at {host}.\n{e}")
-
-# ---------------- Workflow conversion & IO ----------------
-def is_editor_json(d: dict) -> bool:
-    return isinstance(d, dict) and "nodes" in d and "links" in d
-
-def convert_editor_to_api(editor: dict) -> dict:
-    # Minimal editor->API conversion (covers common cases).
-    def widget_map(n):
-        names = [w.get("name") for w in n.get("widgets", []) if isinstance(w.get("name"), str)]
-        vals = n.get("widgets_values", [])
-        return { (names[i] if i < len(names) else f"w{i}") : v for i, v in enumerate(vals) }
-
-    def index_links(links):
-        idx = {}
-        for it in links:
-            if isinstance(it, dict):
-                lid = int(it["id"])
-                idx[lid] = (int(it["from_node"]), int(it["from_slot"]), int(it["to_node"]), int(it["to_slot"]))
-            elif isinstance(it, list) and len(it) >= 5:
-                lid = int(it[0])
-                idx[lid] = (int(it[1]), int(it[2]), int(it[3]), int(it[4]))
-        return idx
-
-    nodes, links = editor.get("nodes", []), editor.get("links", [])
-    link_idx = index_links(links)
-    api = {}
-    for n in nodes:
-        nid = str(n.get("id"))
-        ctype = n.get("type")
-        if not nid or not ctype:
-            continue
-        ins = {}
-        wmap = widget_map(n)
-        for inp in n.get("inputs", []):
-            name, lnk = inp.get("name"), inp.get("link")
-            if not isinstance(name, str):
-                continue
-            if lnk is None or lnk == -1:
-                if name in wmap:
-                    ins[name] = wmap[name]
-            else:
-                if int(lnk) in link_idx:
-                    frm, frm_slot, to, to_slot = link_idx[int(lnk)]
-                    if int(nid) == to:
-                        ins[name] = [str(frm), frm_slot]
-        api[nid] = {"class_type": ctype, "inputs": ins}
-    return api
-
-def load_any_workflow(path: str) -> dict:
-    with open(path, "r", encoding="utf-8") as f:
-        wf = json.load(f)
-    wf = wf.get("workflow") or wf
-    if is_editor_json(wf):
-        wf = convert_editor_to_api(wf)
-    if not isinstance(wf, dict) or not wf:
-        raise RuntimeError("Workflow must be a non-empty dict (API format).")
-    # Ensure string keys
-    return {str(k): v for k, v in wf.items()}
-
-def fetch_object_info(host: str) -> dict:
-    r = requests.get(f"{host}/object_info", timeout=20)
+    r = requests.get(f"{host}/object_info", timeout=5)
     r.raise_for_status()
-    return r.json()
+    return host
 
-def validate_against_server(api_graph: dict, object_info: dict):
-    classes = object_info.get("classes") or object_info
-    missing = []
-    for nid, node in api_graph.items():
-        ctype = node.get("class_type")
-        if ctype not in classes:
-            missing.append((nid, ctype))
-    if missing:
-        msg = "\n".join([f"- node {nid}: '{ctype}'" for nid, ctype in missing])
-        raise RuntimeError("Unknown node class on server:\n" + msg)
+# ---------------- Workflow IO (API format only) ----------------
+def load_api_workflow(path: str) -> dict:
+    """
+    Load a ComfyUI workflow in API format.
+    - Accepts a dict at root (API) or under top-level key 'workflow' (already API).
+    - If it looks like an editor graph (contains 'nodes'/'links'), we bail out.
+    """
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    wf = data.get("workflow") if isinstance(data, dict) else None
+    wf = wf if isinstance(wf, dict) else data
+
+    if isinstance(wf, dict) and ("nodes" in wf or "links" in wf):
+        raise RuntimeError(
+            "This file is an *editor* graph. Please export API JSON (Manager → Save (API)) "
+            "or use a file that already contains the API prompt graph."
+        )
+
+    if not isinstance(wf, dict) or not wf:
+        raise RuntimeError("Workflow must be a non-empty dict in API format.")
+
+    # Ensure all keys are strings (Comfy expects string node ids)
+    wf = {str(k): v for k, v in wf.items()}
+    # Minimal sanity check for API shape
+    for nid, node in wf.items():
+        if not isinstance(node, dict) or "class_type" not in node or "inputs" not in node:
+            raise RuntimeError("Invalid API graph: each node must have 'class_type' and 'inputs'.")
+    return wf
 
 def get_lines_from_node(api_graph: dict, node_id: str, key: str = "text"):
     node_id = str(node_id)
@@ -124,8 +76,10 @@ def get_lines_from_node(api_graph: dict, node_id: str, key: str = "text"):
         raise KeyError(f"Input key '{key}' not found on node {node_id}. Available: {list(inputs.keys())}")
     raw = inputs[key]
     if not isinstance(raw, str):
-        raise TypeError(f"Expected string for inputs['{key}'] on node {node_id}, got {type(raw)}.\n"
-                        "If it's linked, provide a TXT file instead.")
+        raise TypeError(
+            f"Expected string for inputs['{key}'] on node {node_id}, got {type(raw)}.\n"
+            "If that input is *linked*, use a Prompts TXT file instead."
+        )
     lines = [ln.strip() for ln in raw.splitlines()]
     return [ln for ln in lines if ln and not ln.lstrip().startswith('#')]
 
@@ -134,9 +88,9 @@ def get_lines_from_txt(path: str):
     lines = [ln.strip() for ln in text.splitlines()]
     return [ln for ln in lines if ln and not ln.lstrip().startswith('#')]
 
-def queue_prompt(host: str, prompt_graph: dict) -> dict:
+def queue_prompt(host: str, prompt_graph: dict, client_id: str) -> dict:
     url = f"{host}/prompt"
-    payload = {"prompt": prompt_graph, "client_id": str(uuid.uuid4())}
+    payload = {"prompt": prompt_graph, "client_id": client_id}
     r = requests.post(url, json=payload, timeout=60)
     if r.status_code != 200:
         raise RuntimeError(f"HTTP {r.status_code} from {url}\n{r.text}")
@@ -147,141 +101,111 @@ class BatchGUI(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("ComfyUI Batch GUI — queue prompts per line")
-        self.geometry("760x520")
-        self.minsize(680, 480)
-
-        # Dark window background
+        self.geometry("780x560")
+        self.minsize(700, 520)
         self.configure(bg=BG)
 
         # ttk styling
         style = ttk.Style(self)
-        try:
-            style.theme_use("clam")  # respects custom colors across platforms
-        except tk.TclError:
-            pass
+        try: style.theme_use("clam")
+        except tk.TclError: pass
 
         style.configure("TFrame", background=PANEL_BG)
         style.configure("TLabel", background=PANEL_BG, foreground=FG)
-
-        style.configure("TEntry",
-                        fieldbackground=INPUT_BG,
-                        foreground=FG,
-                        background=PANEL_BG,
-                        bordercolor=BORDER)
-        style.map("TEntry",
-                  fieldbackground=[("disabled", "#1f1f1f"), ("!disabled", INPUT_BG)])
-
-        style.configure("TSpinbox",
-                        fieldbackground=INPUT_BG,
-                        foreground=FG,
-                        arrowsize=12)
-        style.map("TSpinbox",
-                  fieldbackground=[("disabled", "#1f1f1f"), ("!disabled", INPUT_BG)])
-
-        style.configure("Dark.TButton",
-                        background=INPUT_BG,
-                        foreground=FG,
-                        bordercolor=BORDER,
-                        relief="flat",
-                        padding=(10,4))
-        style.map("Dark.TButton",
-                  background=[("active","#3a3a3a"),("pressed","#444444")],
-                  foreground=[("disabled","#666666")])
-
-        style.configure("Accent.TButton",
-                        background=ACCENT,
-                        foreground="#0b0b0b",
-                        bordercolor=ACCENT,
-                        relief="flat",
-                        padding=(10,4))
-        style.map("Accent.TButton",
-                  background=[("active","#1a8dff"), ("pressed","#0f6fd6")])
-
-        style.configure("Danger.TButton",
-                        background=DANGER,
-                        foreground="#0b0b0b",
-                        bordercolor=DANGER,
-                        relief="flat",
-                        padding=(10,4))
-        style.map("Danger.TButton",
-                  background=[("active","#ff5349"), ("pressed","#d62a20")],
-                  foreground=[("disabled","#444444")])
+        style.configure("TEntry", fieldbackground=INPUT_BG, foreground=FG,
+                        background=PANEL_BG, bordercolor=BORDER)
+        style.map("TEntry", fieldbackground=[("disabled", "#1f1f1f"), ("!disabled", INPUT_BG)])
+        style.configure("TSpinbox", fieldbackground=INPUT_BG, foreground=FG, arrowsize=12)
+        style.map("TSpinbox", fieldbackground=[("disabled", "#1f1f1f"), ("!disabled", INPUT_BG)])
+        style.configure("Accent.TButton", background=ACCENT, foreground="#0b0b0b",
+                        bordercolor=ACCENT, relief="flat", padding=(12,6))
+        style.map("Accent.TButton", background=[("active","#1a8dff"), ("pressed","#0f6fd6")])
 
         pad = {"padx": 10, "pady": 6}
 
-        # Top frame (grid inside)
+        # --- Top frame (4 columns, neat alignment) ---
         top = ttk.Frame(self, style="TFrame")
         top.pack(fill="x", **pad)
 
-        ttk.Label(top, text="Comfy Host:").grid(row=0, column=0, sticky="w")
-        self.host_var = tk.StringVar(value="http://127.0.0.1:8188")
-        ttk.Entry(top, textvariable=self.host_var, width=40).grid(row=0, column=1, sticky="ew", padx=(6,12))
+        top.grid_columnconfigure(0, weight=0)
+        top.grid_columnconfigure(1, weight=1)   # stretch
+        top.grid_columnconfigure(2, weight=0)
+        top.grid_columnconfigure(3, weight=0)
 
+        # Row 0: Comfy Host
+        ttk.Label(top, text="Comfy Host:").grid(row=0, column=0, sticky="w", pady=(0,6))
+        self.host_var = tk.StringVar(value="http://127.0.0.1:8188")
+        ttk.Entry(top, textvariable=self.host_var).grid(row=0, column=1, columnspan=3,
+                                                        sticky="ew", padx=(6,0), pady=(0,6))
+
+        # Row 1: Workflow JSON
         ttk.Label(top, text="Workflow JSON:").grid(row=1, column=0, sticky="w")
         self.json_var = tk.StringVar()
-        ttk.Entry(top, textvariable=self.json_var).grid(row=1, column=1, sticky="ew", padx=(6,6))
-        ttk.Button(top, text="Browse…", style="Dark.TButton", command=self._pick_json)\
-            .grid(row=1, column=2, sticky="e")
+        ttk.Entry(top, textvariable=self.json_var).grid(row=1, column=1, columnspan=2,
+                                                        sticky="ew", padx=(6,6))
+        ttk.Button(top, text="Browse…", style="Accent.TButton",
+                   command=self._pick_json).grid(row=1, column=3, sticky="e")
 
+        # Row 2: Prompts TXT (optional)
         ttk.Label(top, text="Prompts TXT (optional):").grid(row=2, column=0, sticky="w")
         self.txt_var = tk.StringVar()
-        ttk.Entry(top, textvariable=self.txt_var).grid(row=2, column=1, sticky="ew", padx=(6,6))
-        ttk.Button(top, text="…", width=3, style="Dark.TButton", command=self._pick_txt)\
-            .grid(row=2, column=2, sticky="e")
+        ttk.Entry(top, textvariable=self.txt_var).grid(row=2, column=1, columnspan=2,
+                                                       sticky="ew", padx=(6,6))
+        ttk.Button(top, text="…", width=3, style="Accent.TButton",
+                   command=self._pick_txt).grid(row=2, column=3, sticky="e")
 
-        ttk.Label(top, text="Text Node ID:").grid(row=3, column=0, sticky="w")
+        # Row 3: Text Node ID  |  Text Input Key
+        ttk.Label(top, text="Text Node ID:").grid(row=3, column=0, sticky="w", pady=(6,0))
         self.node_var = tk.StringVar(value="1")
-        ttk.Entry(top, textvariable=self.node_var, width=8).grid(row=3, column=1, sticky="w", padx=(6,0))
+        ttk.Entry(top, textvariable=self.node_var, width=10).grid(row=3, column=1,
+                                                                  sticky="w", padx=(6,0), pady=(6,0))
 
-        ttk.Label(top, text="Text Input Key:").grid(row=3, column=1, sticky="e", padx=(120,0))
+        ttk.Label(top, text="Text Input Key:").grid(row=3, column=2, sticky="e", pady=(6,0))
         self.key_var = tk.StringVar(value="text")
-        ttk.Entry(top, textvariable=self.key_var, width=12).grid(row=3, column=1, sticky="w", padx=(220,0))
+        ttk.Entry(top, textvariable=self.key_var, width=12).grid(row=3, column=3,
+                                                                 sticky="w", padx=(6,0), pady=(6,0))
 
+        # Row 4: Repeats
         ttk.Label(top, text="Repeats per line:").grid(row=4, column=0, sticky="w")
         self.repeats_var = tk.IntVar(value=1)
         ttk.Spinbox(top, from_=1, to=10000, textvariable=self.repeats_var, width=8)\
             .grid(row=4, column=1, sticky="w", padx=(6,0))
 
-        # Buttons row (pack)
+        # Buttons row (Run only)
         btns = ttk.Frame(self, style="TFrame")
         btns.pack(fill="x", **pad)
         self.run_btn = ttk.Button(btns, text="Run", style="Accent.TButton", command=self._on_run)
         self.run_btn.pack(side="right")
-        self.stop_btn = ttk.Button(btns, text="Stop", style="Danger.TButton", command=self._on_stop, state="disabled")
-        self.stop_btn.pack(side="right", padx=(0,8))
 
-        # Log area (tk.Text manual colors)
+        # Log area
         self.log = tk.Text(self, wrap="word", height=18,
-                           bg=INPUT_BG, fg=FG,
-                           insertbackground=FG,  # caret
+                           bg=INPUT_BG, fg=FG, insertbackground=FG,
                            highlightthickness=1, highlightbackground=BORDER,
                            relief="flat")
         self.log.pack(fill="both", expand=True, **pad)
-        self._log("Ready. Select a workflow JSON.")
+        self._log("Ready. Select a workflow JSON (API format).")
 
-        # Grid weights for the top frame
-        for c in range(3):
-            top.grid_columnconfigure(c, weight=1 if c == 1 else 0)
-
-        # Runtime flags/queues
-        self._stop_flag = threading.Event()
+        # queues/timers
         self._log_queue = queue.Queue()
         self._poll_log_queue()
+
+        # single client id for the app session (helps identify runs in server logs)
+        self._client_id = f"batch_gui:{uuid.uuid4()}"
 
     # --- File pickers
     def _pick_json(self):
         p = filedialog.askopenfilename(title="Select Workflow JSON",
-                                       filetypes=[("JSON files","*.json"),("All","*.*")])
+                                       filetypes=[("JSON files","*.json"), ("All files","*.*")])
         if p:
             self.json_var.set(p)
 
     def _pick_txt(self):
         p = filedialog.askopenfilename(title="Select Prompts TXT",
-                                       filetypes=[("Text files","*.txt"),("All","*.*")])
+                                       filetypes=[("Text files","*.txt"), ("All files","*.*")])
         if p:
             self.txt_var.set(p)
 
-    # --- Logging
+    # --- Logging pump
     def _log(self, msg):
         self.log.insert("end", msg + "\n")
         self.log.see("end")
@@ -299,9 +223,8 @@ class BatchGUI(tk.Tk):
                 self._log(msg)
         self.after(100, self._poll_log_queue)
 
-    # --- Small helpers (logic only)
+    # --- Helpers
     def _get_repeats(self) -> int:
-        """Robustly read repeats (Spinbox may return '' or strings)."""
         try:
             val = int(str(self.repeats_var.get()).strip())
         except Exception:
@@ -337,6 +260,7 @@ class BatchGUI(tk.Tk):
 
     # --- Controls
     def _on_run(self):
+        # Preflight
         try:
             host = check_server_or_raise(self.host_var.get())
         except Exception as e:
@@ -345,21 +269,15 @@ class BatchGUI(tk.Tk):
 
         jp = self.json_var.get().strip()
         if not jp:
-            messagebox.showerror("Missing file", "Please select a Workflow JSON.")
+            messagebox.showerror("Missing file", "Please select a Workflow JSON (API format).")
             return
         if not Path(jp).is_file():
             messagebox.showerror("File not found", f"JSON file not found:\n{jp}")
             return
 
+        # Disable Run while working
         self.run_btn.config(state="disabled")
-        self.stop_btn.config(state="normal")
-        self._stop_flag.clear()
-        t = threading.Thread(target=lambda: self._worker(host), daemon=True)
-        t.start()
-
-    def _on_stop(self):
-        self._stop_flag.set()
-        self._enqueue_log("Stop requested...")
+        threading.Thread(target=lambda: self._worker(host), daemon=True).start()
 
     # --- Worker
     def _worker(self, host: str):
@@ -369,20 +287,16 @@ class BatchGUI(tk.Tk):
         key      = self.key_var.get().strip() or "text"
 
         try:
-            self._enqueue_log("Loading workflow...")
-            graph = load_any_workflow(json_p)
-
-            self._enqueue_log("Validating node classes on server...")
-            objinfo = fetch_object_info(host)
-            validate_against_server(graph, objinfo)
+            self._enqueue_log("Loading workflow (API format)...")
+            graph = load_api_workflow(json_p)
 
             # Collect prompts
             if txt_p:
                 lines = get_lines_from_txt(txt_p)
-                self._enqueue_log(f"Loaded {len(lines)} lines from TXT.")
+                self._enqueue_log(f"Loaded {len(lines)} line(s) from TXT.")
             else:
                 lines = get_lines_from_node(graph, node_id, key=key)
-                self._enqueue_log(f"Loaded {len(lines)} lines from node {node_id}.{key}.")
+                self._enqueue_log(f"Loaded {len(lines)} line(s) from node {node_id}.{key}.")
 
             if not lines:
                 raise RuntimeError("No prompts found after filtering (empty and '#' lines ignored).")
@@ -392,30 +306,31 @@ class BatchGUI(tk.Tk):
             total = len(jobs)
             self._enqueue_log(f"Preflight: {len(lines)} line(s) × repeats {repeats} = {total} job(s).")
 
+            force_unique = repeats > 1  # <<— only randomize when repeats > 1
+            if not force_unique:
+                self._enqueue_log("Repeats = 1 → respecting workflow seed (no forced randomization).")
+
+            # Queue jobs
             done = 0
             for idx, line, rep in jobs:
-                if self._stop_flag.is_set():
-                    break
-
                 patched = copy.deepcopy(graph)
                 patched[str(node_id)]["inputs"][key] = line
 
-                # Make prompt hash unique so ComfyUI won't serve from cache
-                changed = self._set_unique_seed(patched, job_index=(idx - 1) * repeats + rep)
-                if changed:
-                    self._enqueue_log(f"Set unique seed on {changed} node(s) for line#{idx} rep#{rep}")
+                if force_unique:
+                    changed = self._set_unique_seed(patched, job_index=(idx - 1) * repeats + rep)
+                    if changed:
+                        self._enqueue_log(f"Set unique seed on {changed} node(s) for line#{idx} rep#{rep}")
 
-                data = queue_prompt(host, patched)
+                data = queue_prompt(host, patched, client_id=self._client_id)
                 done += 1
                 self._enqueue_log(f"[{done}/{total}] queued prompt_id={data.get('prompt_id')}  line#{idx}  rep#{rep}")
                 time.sleep(0.05)
 
-            self._enqueue_log("Done." if not self._stop_flag.is_set() else "Stopped.")
+            self._enqueue_log("Done.")
         except Exception as e:
             self._enqueue_log(f"ERROR: {e}")
         finally:
             self.run_btn.config(state="normal")
-            self.stop_btn.config(state="disabled")
 
 def main():
     app = BatchGUI()
