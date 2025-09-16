@@ -117,6 +117,19 @@ class BatchGUI(tk.Tk):
         style.map("TEntry", fieldbackground=[("disabled", "#1f1f1f"), ("!disabled", INPUT_BG)])
         style.configure("TSpinbox", fieldbackground=INPUT_BG, foreground=FG, arrowsize=12)
         style.map("TSpinbox", fieldbackground=[("disabled", "#1f1f1f"), ("!disabled", INPUT_BG)])
+
+        # Dark button style (for Browse/…)
+        style.configure("Dark.TButton",
+                        background=INPUT_BG,
+                        foreground=FG,
+                        bordercolor=BORDER,
+                        relief="flat",
+                        padding=(12,6))
+        style.map("Dark.TButton",
+                  background=[("active","#3a3a3a"), ("pressed","#444444")],
+                  foreground=[("disabled","#666666")])
+
+        # Accent button (Run only)
         style.configure("Accent.TButton", background=ACCENT, foreground="#0b0b0b",
                         bordercolor=ACCENT, relief="flat", padding=(12,6))
         style.map("Accent.TButton", background=[("active","#1a8dff"), ("pressed","#0f6fd6")])
@@ -143,7 +156,7 @@ class BatchGUI(tk.Tk):
         self.json_var = tk.StringVar()
         ttk.Entry(top, textvariable=self.json_var).grid(row=1, column=1, columnspan=2,
                                                         sticky="ew", padx=(6,6))
-        ttk.Button(top, text="Browse…", style="Accent.TButton",
+        ttk.Button(top, text="Browse…", style="Dark.TButton",
                    command=self._pick_json).grid(row=1, column=3, sticky="e")
 
         # Row 2: Prompts TXT (optional)
@@ -151,7 +164,7 @@ class BatchGUI(tk.Tk):
         self.txt_var = tk.StringVar()
         ttk.Entry(top, textvariable=self.txt_var).grid(row=2, column=1, columnspan=2,
                                                        sticky="ew", padx=(6,6))
-        ttk.Button(top, text="…", width=3, style="Accent.TButton",
+        ttk.Button(top, text="…", width=3, style="Dark.TButton",
                    command=self._pick_txt).grid(row=2, column=3, sticky="e")
 
         # Row 3: Text Node ID  |  Text Input Key
@@ -306,7 +319,7 @@ class BatchGUI(tk.Tk):
             total = len(jobs)
             self._enqueue_log(f"Preflight: {len(lines)} line(s) × repeats {repeats} = {total} job(s).")
 
-            force_unique = repeats > 1  # <<— only randomize when repeats > 1
+            force_unique = repeats > 1  # only randomize when repeats > 1
             if not force_unique:
                 self._enqueue_log("Repeats = 1 → respecting workflow seed (no forced randomization).")
 
