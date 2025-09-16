@@ -1,0 +1,47 @@
+=== START === 
+[*] Working dir: "D:\StableDiffusion\DatasetTools\DatasetTools\" 
+[*] Running as: madfi 
+[*] Target venv: "D:\StableDiffusion\DatasetTools\DatasetTools\.venv" 
+C:\Users\madfi\AppData\Local\Programs\Python\Launcher\py.exe
+[*] Creating venv... 
+Python 3.13.5
+D:\StableDiffusion\DatasetTools\DatasetTools\.venv\Scripts\python.exe
+C:\Users\madfi\AppData\Local\Programs\Python\Python312\python.exe
+C:\Users\madfi\AppData\Local\Microsoft\WindowsApps\python.exe
+[*] Upgrading pip... 
+Requirement already satisfied: pip in d:\stablediffusion\datasettools\datasettools\.venv\lib\site-packages (25.1.1)
+Collecting pip
+  Using cached pip-25.2-py3-none-any.whl.metadata (4.7 kB)
+Collecting setuptools
+  Using cached setuptools-80.9.0-py3-none-any.whl.metadata (6.6 kB)
+Collecting wheel
+  Using cached wheel-0.45.1-py3-none-any.whl.metadata (2.3 kB)
+Using cached pip-25.2-py3-none-any.whl (1.8 MB)
+Using cached setuptools-80.9.0-py3-none-any.whl (1.2 MB)
+Using cached wheel-0.45.1-py3-none-any.whl (72 kB)
+Installing collected packages: wheel, setuptools, pip
+  Attempting uninstall: pip
+    Found existing installation: pip 25.1.1
+    Uninstalling pip-25.1.1:
+      Successfully uninstalled pip-25.1.1
+
+Successfully installed pip-25.2 setuptools-80.9.0 wheel-0.45.1
+WARNING: Package(s) not found: requests
+Collecting requests
+  Using cached requests-2.32.5-py3-none-any.whl.metadata (4.9 kB)
+Collecting charset_normalizer<4,>=2 (from requests)
+  Downloading charset_normalizer-3.4.3-cp313-cp313-win_amd64.whl.metadata (37 kB)
+Collecting idna<4,>=2.5 (from requests)
+  Using cached idna-3.10-py3-none-any.whl.metadata (10 kB)
+Collecting urllib3<3,>=1.21.1 (from requests)
+  Using cached urllib3-2.5.0-py3-none-any.whl.metadata (6.5 kB)
+Collecting certifi>=2017.4.17 (from requests)
+  Using cached certifi-2025.8.3-py3-none-any.whl.metadata (2.4 kB)
+Using cached requests-2.32.5-py3-none-any.whl (64 kB)
+Downloading charset_normalizer-3.4.3-cp313-cp313-win_amd64.whl (107 kB)
+Using cached idna-3.10-py3-none-any.whl (70 kB)
+Using cached urllib3-2.5.0-py3-none-any.whl (129 kB)
+Using cached certifi-2025.8.3-py3-none-any.whl (161 kB)
+Installing collected packages: urllib3, idna, charset_normalizer, certifi, requests
+
+Successfully installed certifi-2025.8.3 charset_normalizer-3.4.3 idna-3.10 requests-2.32.5 urllib3-2.5.0
