@@ -29,11 +29,6 @@ class JsonPathPicker(tk.Tk):
         # --- Button
         ttk.Button(main, text="Browse…", command=self.pick_file).grid(row=0, column=2, padx=(8, 0), sticky="e")
 
-        # Optional: status bar (shows quick validation)
-        self.status_var = tk.StringVar(value="Select a .json workflow file.")
-        status = ttk.Label(main, textvariable=self.status_var, anchor="w")
-        status.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(8, 0))
-
         # Bind validation when user edits the entry
         self.path_var.trace_add("write", self.validate_path)
 
