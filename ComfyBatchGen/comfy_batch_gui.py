@@ -22,11 +22,30 @@ ACCENT      = "#0a84ff"   # Run
 DANGER      = "#ff3b30"   # Stop
 BORDER      = "#3c3c3c"
 
-# ---------------- Core helpers (unchanged) ----------------
+# ---------------- Network helpers ----------------
+def normalize_host(s: str) -> str:
+    s = (s or "").strip()
+    if not s:
+        raise ValueError("Comfy host is empty.")
+    if not (s.startswith("http://") or s.startswith("https://")):
+        s = "http://" + s
+    return s.rstrip("/")
+
+def check_server_or_raise(host_text: str) -> str:
+    host = normalize_host(host_text)
+    try:
+        r = requests.get(f"{host}/object_info", timeout=5)
+        r.raise_for_status()
+        return host
+    except requests.exceptions.RequestException as e:
+        raise RuntimeError(f"Cannot reach ComfyUI at {host}.\n{e}")
+
+# ---------------- Workflow conversion & IO ----------------
 def is_editor_json(d: dict) -> bool:
     return isinstance(d, dict) and "nodes" in d and "links" in d
 
 def convert_editor_to_api(editor: dict) -> dict:
+    # Minimal editor->API conversion (covers common cases).
     def widget_map(n):
         names = [w.get("name") for w in n.get("widgets", []) if isinstance(w.get("name"), str)]
         vals = n.get("widgets_values", [])
@@ -36,9 +55,11 @@ def convert_editor_to_api(editor: dict) -> dict:
         idx = {}
         for it in links:
             if isinstance(it, dict):
-                lid = int(it["id"]); idx[lid] = (int(it["from_node"]), int(it["from_slot"]), int(it["to_node"]), int(it["to_slot"]))
+                lid = int(it["id"])
+                idx[lid] = (int(it["from_node"]), int(it["from_slot"]), int(it["to_node"]), int(it["to_slot"]))
             elif isinstance(it, list) and len(it) >= 5:
-                lid = int(it[0]); idx[lid] = (int(it[1]), int(it[2]), int(it[3]), int(it[4]))
+                lid = int(it[0])
+                idx[lid] = (int(it[1]), int(it[2]), int(it[3]), int(it[4]))
         return idx
 
     nodes, links = editor.get("nodes", []), editor.get("links", [])
@@ -74,6 +95,7 @@ def load_any_workflow(path: str) -> dict:
         wf = convert_editor_to_api(wf)
     if not isinstance(wf, dict) or not wf:
         raise RuntimeError("Workflow must be a non-empty dict (API format).")
+    # Ensure string keys
     return {str(k): v for k, v in wf.items()}
 
 def fetch_object_info(host: str) -> dict:
@@ -128,7 +150,7 @@ class BatchGUI(tk.Tk):
         self.geometry("760x520")
         self.minsize(680, 480)
 
-        # Apply dark window background
+        # Dark window background
         self.configure(bg=BG)
 
         # ttk styling
@@ -223,16 +245,15 @@ class BatchGUI(tk.Tk):
         # Buttons row (pack)
         btns = ttk.Frame(self, style="TFrame")
         btns.pack(fill="x", **pad)
-        # Align to the right for a more "app-like" look
         self.run_btn = ttk.Button(btns, text="Run", style="Accent.TButton", command=self._on_run)
         self.run_btn.pack(side="right")
         self.stop_btn = ttk.Button(btns, text="Stop", style="Danger.TButton", command=self._on_stop, state="disabled")
         self.stop_btn.pack(side="right", padx=(0,8))
 
-        # Log area (tk.Text needs manual colors)
+        # Log area (tk.Text manual colors)
         self.log = tk.Text(self, wrap="word", height=18,
                            bg=INPUT_BG, fg=FG,
-                           insertbackground=FG,  # caret color
+                           insertbackground=FG,  # caret
                            highlightthickness=1, highlightbackground=BORDER,
                            relief="flat")
         self.log.pack(fill="both", expand=True, **pad)
@@ -278,30 +299,74 @@ class BatchGUI(tk.Tk):
                 self._log(msg)
         self.after(100, self._poll_log_queue)
 
+    # --- Small helpers (logic only)
+    def _get_repeats(self) -> int:
+        """Robustly read repeats (Spinbox may return '' or strings)."""
+        try:
+            val = int(str(self.repeats_var.get()).strip())
+        except Exception:
+            val = 1
+        return max(1, val)
+
+    def _set_unique_seed(self, graph: dict, job_index: int) -> int:
+        """
+        Force a unique seed in the prompt graph so ComfyUI cache won't hit.
+        Tries direct sampler 'seed' fields and common upstream numeric fields.
+        Returns how many places were changed.
+        """
+        seed_val = (int(time.time() * 1000) ^ (job_index * 2654435761)) & 0x7fffffff
+        changed = 0
+        for nid, node in graph.items():
+            ins = node.get("inputs", {})
+            if "seed" in ins:
+                v = ins["seed"]
+                if isinstance(v, (int, float)):
+                    ins["seed"] = int(seed_val)
+                    changed += 1
+                elif isinstance(v, list) and v and isinstance(v[0], (str, int)):
+                    src_id = str(v[0])
+                    src = graph.get(src_id)
+                    if isinstance(src, dict):
+                        src_ins = src.get("inputs", {})
+                        for key in ("seed", "value", "val", "number", "int", "integer"):
+                            if key in src_ins and isinstance(src_ins[key], (int, float)):
+                                src_ins[key] = int(seed_val)
+                                changed += 1
+                                break
+        return changed
+
     # --- Controls
     def _on_run(self):
-        if not self.json_var.get().strip():
+        try:
+            host = check_server_or_raise(self.host_var.get())
+        except Exception as e:
+            messagebox.showerror("Connection error", str(e))
+            return
+
+        jp = self.json_var.get().strip()
+        if not jp:
             messagebox.showerror("Missing file", "Please select a Workflow JSON.")
             return
+        if not Path(jp).is_file():
+            messagebox.showerror("File not found", f"JSON file not found:\n{jp}")
+            return
+
         self.run_btn.config(state="disabled")
         self.stop_btn.config(state="normal")
         self._stop_flag.clear()
-        t = threading.Thread(target=self._worker, daemon=True)
+        t = threading.Thread(target=lambda: self._worker(host), daemon=True)
         t.start()
 
     def _on_stop(self):
-        # Signals the worker loop to stop *after* the current in-flight request
         self._stop_flag.set()
         self._enqueue_log("Stop requested...")
 
     # --- Worker
-    def _worker(self):
-        host     = self.host_var.get().strip()
+    def _worker(self, host: str):
         json_p   = self.json_var.get().strip()
         txt_p    = self.txt_var.get().strip()
         node_id  = self.node_var.get().strip()
         key      = self.key_var.get().strip() or "text"
-        repeats  = max(1, int(self.repeats_var.get()))
 
         try:
             self._enqueue_log("Loading workflow...")
@@ -322,20 +387,28 @@ class BatchGUI(tk.Tk):
             if not lines:
                 raise RuntimeError("No prompts found after filtering (empty and '#' lines ignored).")
 
-            total = len(lines) * repeats
-            count = 0
-            for idx, line in enumerate(lines, 1):
+            repeats = self._get_repeats()
+            jobs = [(idx, line, rep) for idx, line in enumerate(lines, 1) for rep in range(1, repeats + 1)]
+            total = len(jobs)
+            self._enqueue_log(f"Preflight: {len(lines)} line(s) × repeats {repeats} = {total} job(s).")
+
+            done = 0
+            for idx, line, rep in jobs:
                 if self._stop_flag.is_set():
                     break
-                for r in range(repeats):
-                    if self._stop_flag.is_set():
-                        break
-                    patched = copy.deepcopy(graph)
-                    patched[str(node_id)]["inputs"][key] = line
-                    data = queue_prompt(host, patched)  # may block briefly
-                    count += 1
-                    self._enqueue_log(f"[{count}/{total}] queued prompt_id={data.get('prompt_id')} line#{idx} rep#{r+1}")
-                    time.sleep(0.05)
+
+                patched = copy.deepcopy(graph)
+                patched[str(node_id)]["inputs"][key] = line
+
+                # Make prompt hash unique so ComfyUI won't serve from cache
+                changed = self._set_unique_seed(patched, job_index=(idx - 1) * repeats + rep)
+                if changed:
+                    self._enqueue_log(f"Set unique seed on {changed} node(s) for line#{idx} rep#{rep}")
+
+                data = queue_prompt(host, patched)
+                done += 1
+                self._enqueue_log(f"[{done}/{total}] queued prompt_id={data.get('prompt_id')}  line#{idx}  rep#{rep}")
+                time.sleep(0.05)
 
             self._enqueue_log("Done." if not self._stop_flag.is_set() else "Stopped.")
         except Exception as e:
