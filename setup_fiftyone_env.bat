@@ -60,14 +60,12 @@ python -m pip install --upgrade pip setuptools wheel
 
 echo [*] Installing FiftyOne...
 pip install fiftyone || goto :pkg_error
-
 echo [OK] FiftyOne installed.
 fiftyone --version
-
 echo.
 
 rem =========================
-rem Optional installs (prompted)
+rem Optional: fiftyone-brain
 rem =========================
 call :ask_yn "Install fiftyone-brain (y/n)? " && (
   echo [*] Installing fiftyone-brain...
@@ -75,10 +73,47 @@ call :ask_yn "Install fiftyone-brain (y/n)? " && (
 )
 echo.
 
+rem =========================
+rem Optional: PyTorch (CPU / CUDA / Skip)
+rem =========================
+echo Install PyTorch (required by many Brain ops and Florence2/captioning plugins)
+set "TORCH_CHOICE="
+set /p TORCH_CHOICE="Choose: [C]PU / [G]PU (CUDA 12.1) / [S]kip  > "
+if /I "%TORCH_CHOICE%"=="C" (
+  echo [*] Installing PyTorch CPU build...
+  pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+) else if /I "%TORCH_CHOICE%"=="G" (
+  echo [*] Installing PyTorch CUDA 12.1 build...
+  pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+) else (
+  echo [*] Skipping PyTorch install.
+  set "TORCH_SKIPPED=1"
+)
+echo.
+
+rem Quick import check (purely informational)
+echo [*] Verifying torch import (this may print an error if not installed)...
+python -c "import importlib,sys;print('torch:',bool(importlib.util.find_spec('torch')))"
+echo.
+
+rem =========================
+rem Optional: umap-learn (Embeddings/UMAP)
+rem =========================
+call :ask_yn "Install umap-learn for Embeddings panel (y/n)? " && (
+  echo [*] Installing umap-learn...
+  pip install umap-learn || echo [!] umap-learn install failed.
+)
+echo.
+
+rem =========================
 rem Ensure git for plugin downloads
+rem =========================
 set "GIT_OK="
 call :ensure_git
 
+rem =========================
+rem Plugins (prompted)
+rem =========================
 if defined GIT_OK (
   call :ask_yn "Install plugin: voxel51 / plugins / io (y/n)? " && (
     echo [*] Downloading plugin: io ...
@@ -106,6 +141,14 @@ if defined GIT_OK (
   echo [!] "git" not found. Skipping plugin downloads. Install Git for Windows and re-run:
   echo     https://git-scm.com/download/win
 )
+echo.
+
+rem If Torch was skipped, offer to disable florence2 (avoids error popups)
+if defined TORCH_SKIPPED (
+  call :ask_yn "Disable @jacobmarks/florence2 plugin (no torch) (y/n)? " && (
+    fiftyone plugins disable @jacobmarks/florence2
+  )
+)
 
 echo.
 echo [*] Installed/available plugins:
@@ -117,7 +160,8 @@ echo     Activate (cmd):   call "%VENV_DIR%\Scripts\activate.bat"
 echo     Activate (PS):    %VENV_DIR:\=\\%\Scripts\\Activate.ps1
 echo     Deactivate:       deactivate
 echo.
-echo     Quick test:       python -c "import fiftyone as fo; print('FiftyOne', fo.__version__)"
+echo     In the App, open the Operator Browser (press the backtick ` ):
+echo       - Brain: compute similarity / uniqueness / visualization
 echo.
 pause
 goto :end
