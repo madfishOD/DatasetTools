@@ -2,16 +2,16 @@
   <PropertyGroup>
     <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
     <SchemaVersion>2.0</SchemaVersion>
-    <ProjectGuid>ca7d04af-c9ce-45c1-86c1-91f2142f0d6f</ProjectGuid>
+    <ProjectGuid>985f3402-2cde-4ba1-9376-abe79a384757</ProjectGuid>
     <ProjectHome>.</ProjectHome>
-    <StartupFile>comfy_batch_gui.py</StartupFile>
+    <StartupFile>FiftyOneTools.py</StartupFile>
     <SearchPath>
     </SearchPath>
     <WorkingDirectory>.</WorkingDirectory>
     <OutputPath>.</OutputPath>
-    <Name>ComfyBatchGen</Name>
-    <RootNamespace>ComfyBatchGen</RootNamespace>
-    <InterpreterId>Global|VisualStudio|Scripts</InterpreterId>
+    <Name>FiftyOneTools</Name>
+    <RootNamespace>FiftyOneTools</RootNamespace>
+    <InterpreterId>MSBuild|.venv|$(MSBuildProjectFullPath)</InterpreterId>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
     <DebugSymbols>true</DebugSymbols>
@@ -22,10 +22,19 @@
     <EnableUnmanagedDebugging>false</EnableUnmanagedDebugging>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="comfy_batch_gui.py" />
+    <Compile Include="FiftyOneTools.py" />
+    <Compile Include="fo_utils.py" />
   </ItemGroup>
   <ItemGroup>
-    <InterpreterReference Include="Global|VisualStudio|Scripts" />
+    <Interpreter Include="..\.venv\">
+      <Id>.venv</Id>
+      <Version>3.12</Version>
+      <Description>.venv (Python 3.12 (64-bit))</Description>
+      <InterpreterPath>Scripts\python.exe</InterpreterPath>
+      <WindowsInterpreterPath>Scripts\pythonw.exe</WindowsInterpreterPath>
+      <PathEnvironmentVariable>PYTHONPATH</PathEnvironmentVariable>
+      <Architecture>X64</Architecture>
+    </Interpreter>
   </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets" />
   <!-- Uncomment the CoreCompile target to enable the Build command in
