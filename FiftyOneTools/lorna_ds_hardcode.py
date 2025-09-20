@@ -1,44 +1,43 @@
-﻿# -*- coding: utf-8 -*-import os
+﻿IMG_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
+DB_DIR = r"D:\FiftyOneDB"
+DATASET_DIR = r"E:\Work\Lorna_daaset_extension"
+DATASET_NAME = "lorna_ext"
 
-os.environ["FIFTYONE_DATABASE_DIR"] = r"D:\FiftyOneDB"  # ROOT .fiftyone folderimport fiftyone as foimport fiftyone.types as fotimport fiftyone.zoo as fozimport fiftyone.brain as fob# --- Config ---dataset_dir = r"E:\Work\Lorna_daaset_extension"  # ensure this path is correctname = "lorna_ext"EMB_FIELD = "clip_emb"BRAIN_KEY = "img_sim"UNIQUE_TOP_N = 100# --- Load/create dataset ---if fo.dataset_exists(name):
-	ds = fo.load_dataset(name)else:
-	ds = fo.Dataset.from_dir(
-		dataset_dir=dataset_dir,
-		dataset_type=fot.ImageDirectory,
-		name=name,
-	)# Keep it across restartsif not ds.persistent:
-	ds.persistent = True# --- Compute (or reuse) CLIP embeddings ---if EMB_FIELD not in ds.get_field_schema():
-	print("Computing CLIP embeddings…")
-	clip_model = foz.load_zoo_model("clip-vit-base32-torch")
-	ds.compute_embeddings(clip_model, embeddings_field=EMB_FIELD)
-	ds.save()else:
-	print(f"Embeddings already present: {EMB_FIELD}")# --- Compute (or reuse) similarity brain run ---if BRAIN_KEY in ds.list_brain_runs():
-    print(f"Reusing brain run: {BRAIN_KEY}")
-    results = ds.load_brain_results(BRAIN_KEY)   # <- use the dataset method
-else:
-    print("Computing similarity (cosine on embeddings)…")
-    results = fob.compute_similarity(
-        ds,
-        embeddings=EMB_FIELD,       # or model=...
-        brain_key=BRAIN_KEY,
-        metric="cosine",
-    )# after you have EMB_FIELD on samples
-UMAP_KEY = "umap_img"
+import os
 
-if UMAP_KEY in ds.list_brain_runs():
-    print(f"Reusing UMAP: {UMAP_KEY}")
+# If you set DB dir in this file, do it BEFORE importing fiftyone:
+# os.environ["FIFTYONE_DATABASE_DIR"] = DB_DIR
+# import fiftyone as fo
+os.environ["FIFTYONE_DATABASE_DIR"] = DB_DIR  # root .fiftyone folder, not ...\var\lib\mongo
+
+import fiftyone as fo
+
+# --- Vars ---
+dataset: fo.Dataset
+session: fo.Session
+
+def create_dataset_from_dir():
+     dataset = fo.Dataset.from_dir(
+        dataset_dir=DATASET_DIR,
+        dataset_type=fo.types.ImageDirectory,
+        name=DATASET_NAME,)
+     dataset.persistent = True
+     return dataset
+
+if DATASET_NAME in fo.list_datasets():
+    dataset = fo.load_dataset(DATASET_NAME)
+    print(f"\nDataset '{DATASET_NAME}' already exist in DB: {DB_DIR}")
+    answer = input(f"\nReimport semples from {DATASET_DIR}? y/n:\n")
+
+    if answer == "y":
+        fo.delete_dataset(DATASET_NAME)
+        dataset = create_dataset_from_dir()
 else:
-    print("Computing UMAP on clip_emb …")
-    # need umap-learn installed once:  pip install umap-learn
-    fob.compute_visualization(
-        ds,
-        embeddings=EMB_FIELD,      # your stored "clip_emb"
-        brain_key=UMAP_KEY,
-        method="umap",             # or "tsne"
-        metric="cosine",
-        n_neighbors=25,
-        min_dist=0.05,
-        overwrite=True,            # set True when you want to refresh
-    )# --- Find most unique samples ---results.find_unique(UNIQUE_TOP_N)unique_view = ds.select(results.unique_ids)# Optionally tag them so you can filter laterfor s in unique_view:
-	if "keep_core" not in s.tags:
-		s.tags.append("keep_core")ds.save()# --- Launch App focused on the unique view ---session = fo.launch_app(ds, address="127.0.0.1")session.view = unique_viewprint("URL:", session.url)session.wait()
+    create_dataset_from_dir()
+
+sample_count = dataset.count()
+print(f"Samples in dataset {sample_count}")
+
+
+#session = fo.launch_app(dataset)
+#session.wait()
