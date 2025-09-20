@@ -10,9 +10,6 @@ if exist "%VENV_DIR%\Scripts\python.exe" (
   echo [*] No venv found at "%VENV_DIR%". Using system Python on PATH.
 )
 
-rem Optional: pin a DB directory (uncomment and edit)
-rem set "FIFTYONE_DATABASE_DIR=D:\StableDiffusion\DatasetTools\FiftyOne\.fo_db"
-
 echo.
 echo [*] Launching Tk GUI...
 echo     You can pass args, e.g.:  --db_dir D:\fo_db  --address 127.0.0.1  --caption_ext .txt

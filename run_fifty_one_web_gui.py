@@ -12,9 +12,12 @@ ap.add_argument("--address", default="127.0.0.1", help="App bind address (defaul
 ap.add_argument("--caption_ext", default=".txt", help="Caption sidecar extension (default .txt)")
 early, _ = ap.parse_known_args()
 
-if early.db_dir:
-    os.environ["FIFTYONE_DATABASE_DIR"] = early.db_dir
-os.environ.setdefault("FIFTYONE_APP_ADDRESS", early.address)
+# if early.db_dir:
+#     os.environ["FIFTYONE_DATABASE_DIR"] = early.db_dir
+# os.environ.setdefault("FIFTYONE_APP_ADDRESS", early.address)
+
+os.environ["FIFTYONE_DATABASE_DIR"] = r"D:\FiftyOneDB"  # root .fiftyone folder, not ...\var\lib\mongo
+
 
 # ---------- now safe to import fiftyone ----------
 import fiftyone as fo
@@ -77,10 +80,13 @@ def create_or_update_dataset(name: str, root_dir: Path, overwrite: bool) -> fo.D
         if overwrite:
             fo.delete_dataset(name)
             ds = fo.Dataset(name)
+            ds.persistent = True
         else:
             return fo.load_dataset(name)
     else:
         ds = fo.Dataset(name)
+        ds.persistent = True
+    
 
     ensure_fields(ds)
     imgs = gather_images(root_dir)
