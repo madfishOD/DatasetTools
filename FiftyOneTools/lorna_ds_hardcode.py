@@ -8,6 +8,23 @@ BATCH_SIZE = 1                      # 1 is safest; you can try >1 on big GPUs
 MAX_NEW_TOKENS = 96                 # caption length budget
 CAPTION_FIELD = "florence2_caption"
 
+# -------------- Zero Shot Labels ------------
+CAPTION_FIELD = "florence2_caption"# your text field
+LABELS_FIELD  = "auto_labels"      # new multi-label field to create
+TAG_FIELD     = "sample tags"      # optional: also push high-confidence labels to sample tags
+
+# Provide the label set you want to detect
+CANDIDATE_LABELS = [
+    "portrait", "full body", "close-up",
+    "horns", "antlers",
+    "blue hair", "purple hair", "long hair", "short hair",
+    "cartoon", "anime", "sketch", "line art", "render",
+    "one girl", "two girls", "group",
+    "outdoor", "city", "night", "indoor",
+]
+
+CONF_THRESH = 0.4  # tweak for your dataset
+
 import os
 import time
 from pathlib import Path
@@ -23,9 +40,12 @@ os.environ["FIFTYONE_DATABASE_DIR"] = DB_DIR  # root .fiftyone folder, not ...\v
 
 import fiftyone as fo
 import torch
+
 from fiftyone import ViewField as F
 from PIL import Image
 from transformers import AutoProcessor, AutoModelForCausalLM
+from transformers import pipeline
+from fiftyone.core.labels import Classifications, Classification
 
 # ---------- Console helpers ----------
 def stamp(msg: str) -> None:
@@ -186,6 +206,118 @@ def caption_image(img_path: str, processor, model) -> Optional[str]:
 
     return text or None
 
+# -------------- Zero Shot Labels ------------
+# ---------- robust field creation ----------
+def ensure_labels_field(ds: fo.Dataset, field_name: str = LABELS_FIELD) -> str:
+    """
+    Ensures there is a field to store multi-label results.
+    Prefers `fo.Classifications`. If that fails (older API), creates a
+    List[String] field instead. Returns the effective field "kind":
+    either "classifications" or "string_list".
+    """
+    schema = ds.get_field_schema()
+    if field_name in schema:
+        f = schema[field_name]
+        # Detect existing type
+        if f.__class__.__name__ == "EmbeddedDocumentField" and getattr(f, "document_type", None).__name__ == "Classifications":
+            return "classifications"
+        if f.__class__.__name__ == "ListField" and getattr(f, "field", None).__class__.__name__ == "StringField":
+            return "string_list"
+        # If it exists but is a different type, raise to avoid corrupting data
+        raise ValueError(f"Field '{field_name}' already exists but is not a Classifications or List[String] field")
+
+    # Try preferred: Classifications
+    try:
+        ds.add_sample_field(field_name, fo.Classifications)
+        ds.save()
+        return "classifications"
+    except Exception:
+        # Fallback: List[String]
+        ds.add_sample_field(field_name, fo.ListField, subfield=fo.StringField)
+        ds.save()
+        return "string_list"
+
+
+# ---------- zero-shot model ----------
+def build_zero_shot():
+    device = 0 if torch.cuda.is_available() else -1
+    return pipeline(
+        "zero-shot-classification",
+        model="facebook/bart-large-mnli",
+        device=device,
+    )
+
+
+def labels_from_caption(clf, caption: str, candidate_labels, thresh=CONF_THRESH):
+    if not caption or not caption.strip():
+        return []
+    out = clf(caption, candidate_labels, multi_label=True)
+    # keep (label, score) pairs over threshold
+    return [(lab, float(score)) for lab, score in zip(out["labels"], out["scores"]) if score >= thresh]
+
+
+# ---------- writers that handle both schemas ----------
+def write_labels_to_sample(sample: fo.Sample, lab_scores, field_kind: str):
+    """
+    Writes to LABELS_FIELD in either of the supported schemas.
+    Also mirrors high-confidence labels into sample.tags if TAG_FIELD is set.
+    """
+    if not lab_scores:
+        return
+
+    if field_kind == "classifications":
+        # Multi-label with confidences
+        from fiftyone.core.labels import Classifications, Classification
+        sample[LABELS_FIELD] = Classifications(
+            classifications=[Classification(label=l, confidence=s) for l, s in lab_scores]
+        )
+    else:
+        # Simple fallback: just store the strings
+        labels = [l for l, _ in lab_scores]
+        sample[LABELS_FIELD] = labels
+
+    # Optional: also add as sample tags (keeps existing tags)
+    if TAG_FIELD:
+        for l, _ in lab_scores:
+            if l not in sample.tags:
+                sample.tags.append(l)
+
+    sample.save()
+
+
+# ---------- main entry to label from captions ----------
+def tag_dataset_from_captions(ds: fo.Dataset):
+    # 1) Make sure the destination field exists and learn its schema
+    field_kind = ensure_labels_field(ds, LABELS_FIELD)
+
+    # 2) Only samples that have captions and don't yet have labels
+    view = ds.match(
+        (fo.ViewField(CAPTION_FIELD).exists()) &
+        (~fo.ViewField(LABELS_FIELD).exists())
+    )
+
+    clf = build_zero_shot()
+    n = 0
+    for s in view.iter_samples(progress=True):
+        # access the caption without .get()
+        try:
+            caption = s[CAPTION_FIELD]     # preferred; fast and explicit
+        except KeyError:
+            caption = getattr(s, CAPTION_FIELD, "")
+
+        labs = labels_from_caption(clf, caption, CANDIDATE_LABELS, CONF_THRESH)
+        if labs:
+            write_labels_to_sample(s, labs, field_kind)
+            n += 1
+
+    print(f"[label] Labeled {n} samples into '{LABELS_FIELD}' (mode: {field_kind}).")
+
+def labels_from_captions(dataset: fo.Dataset):
+    run = ask_yn("Generate labels from captions (Zero Shot)?", default=True)
+    if run:
+        tag_dataset_from_captions(dataset)
+
+# -------------- Main ------------
 def main():
 
     # Load the model once
@@ -195,6 +327,7 @@ def main():
     dataset = load_or_create_dataset(DATASET_NAME, DATASET_DIR)
 
     caption_with_florence(dataset)
+    labels_from_captions(dataset)
 
     session = fo.launch_app(dataset)
     session.wait()
