@@ -13,6 +13,9 @@ CAPTION_FIELD = "florence2_caption"# your text field
 LABELS_FIELD  = "auto_labels"      # new multi-label field to create
 TAG_FIELD     = "sample tags"      # optional: also push high-confidence labels to sample tags
 
+EMB_FIELD = "clip_emb"     # where to store vectors
+UMAP_KEY  = "umap_all"     # brain key to find in App
+
 # Provide the label set you want to detect
 CANDIDATE_LABELS = [
     "portrait", "full body", "close-up",
@@ -42,6 +45,8 @@ import fiftyone as fo
 import torch
 
 from fiftyone import ViewField as F
+import fiftyone.brain as fob
+import fiftyone.zoo as foz
 from PIL import Image
 from transformers import AutoProcessor, AutoModelForCausalLM
 from transformers import pipeline
@@ -207,7 +212,6 @@ def caption_image(img_path: str, processor, model) -> Optional[str]:
     return text or None
 
 # -------------- Zero Shot Labels ------------
-# ---------- robust field creation ----------
 def ensure_labels_field(ds: fo.Dataset, field_name: str = LABELS_FIELD) -> str:
     """
     Ensures there is a field to store multi-label results.
@@ -247,14 +251,12 @@ def build_zero_shot():
         device=device,
     )
 
-
 def labels_from_caption(clf, caption: str, candidate_labels, thresh=CONF_THRESH):
     if not caption or not caption.strip():
         return []
     out = clf(caption, candidate_labels, multi_label=True)
     # keep (label, score) pairs over threshold
     return [(lab, float(score)) for lab, score in zip(out["labels"], out["scores"]) if score >= thresh]
-
 
 # ---------- writers that handle both schemas ----------
 def write_labels_to_sample(sample: fo.Sample, lab_scores, field_kind: str):
@@ -317,6 +319,56 @@ def labels_from_captions(dataset: fo.Dataset):
     if run:
         tag_dataset_from_captions(dataset)
 
+# -------------- Embeddings & UMAP ------------
+def ensure_media(ds: fo.Dataset) -> None:
+    # guarantees media_type is populated so we can filter to images
+    if "media_type" not in ds.get_field_schema():
+        ds.compute_metadata()
+
+def ensure_embeddings(ds: fo.Dataset, force: bool = False) -> None:
+    """
+    Computes CLIP embeddings into EMB_FIELD for image samples (skips others).
+    Reuses existing vectors unless force=True.
+    """
+    ensure_media(ds)
+
+    if (not force) and (EMB_FIELD in ds.get_field_schema()):
+        print(f"[emb] Reusing embeddings: {EMB_FIELD}")
+        return
+
+    print("[emb] Computing CLIP embeddings...")
+    model = foz.load_zoo_model("clip-vit-base32-torch")  # CPU or GPU
+    img_view = ds.match(F("media_type") == "image")
+    if len(img_view) == 0:
+        print("[emb] No images to embed.")
+        return
+
+    img_view.compute_embeddings(model, embeddings_field=EMB_FIELD)
+    ds.save()
+    print("[emb] Done.")
+
+def ensure_umap(ds: fo.Dataset, force: bool = False) -> None:
+    """
+    Computes (or reuses) a 2D visualization from embeddings via UMAP.
+    """
+    # If we already have this brain run and not forcing, reuse it
+    if (UMAP_KEY in ds.list_brain_runs()) and (not force):
+        print(f"[umap] Reusing visualization: {UMAP_KEY}")
+        return
+
+    print("[umap] Computing UMAP (install 'umap-learn' if prompted)...")
+    fob.compute_visualization(
+        ds,
+        embeddings=EMB_FIELD,
+        brain_key=UMAP_KEY,
+        method="umap",
+        metric="cosine",
+        n_neighbors=25,
+        min_dist=0.05,
+        overwrite=True,
+    )
+    print("[umap] Done.")
+
 # -------------- Main ------------
 def main():
 
@@ -328,6 +380,9 @@ def main():
 
     caption_with_florence(dataset)
     labels_from_captions(dataset)
+
+    ensure_embeddings(dataset, force=True)
+    ensure_umap(dataset, force=True)
 
     session = fo.launch_app(dataset)
     session.wait()
