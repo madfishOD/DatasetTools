@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 from fiftyone.core import session
+import fiftyone.core.session.events as foe
 
 # If you set DB dir in this file, do it BEFORE importing fiftyone:
 # os.environ["FIFTYONE_DATABASE_DIR"] = DB_DIR
@@ -78,16 +79,15 @@ def load_or_create_dataset(name: str, root: str) -> fo.Dataset:
         sample_count = ds.count()
         images_count = count_images(DATASET_DIR)
         if(sample_count != images_count):
-            import_images = ask_yn(
+            reimport_images = ask_yn(
                             f"\nDataset '{DATASET_NAME}' already exists in DB -> {DB_DIR}\n"
                             f"Dataset samples:{sample_count} images in dir:{images_count}\n"
                             f"Reimport samples from {DATASET_DIR}?",
                             False
                             )
-            if import_images:
-                paths = collect_image_paths(root)
-                ds.add_images(paths)
-                ds.save()
+            if reimport_images:
+                fo.delete_dataset(name)
+                ds = create_dataset_from_dir(root)
                 print(f"Dataset samples imported: {ds.count()}")
     return ds
 
