@@ -7,6 +7,8 @@ import os
 import time
 from pathlib import Path
 
+from fiftyone.core import session
+
 # If you set DB dir in this file, do it BEFORE importing fiftyone:
 # os.environ["FIFTYONE_DATABASE_DIR"] = DB_DIR
 # import fiftyone as fo
@@ -15,8 +17,8 @@ os.environ["FIFTYONE_DATABASE_DIR"] = DB_DIR  # root .fiftyone folder, not ...\v
 import fiftyone as fo
 
 # --- Vars ---
-dataset: fo.Dataset
-session: fo.Session
+# dataset: fo.Dataset
+# session: fo.Session
 
 # ---------- Console helpers ----------
 def stamp(msg: str) -> None:
@@ -52,33 +54,78 @@ def count_images(root) -> int:
         if p.is_file() and p.suffix.lower() in IMG_EXTS
     )
 
-def create_dataset_from_dir():
-     dataset = fo.Dataset.from_dir(
-        dataset_dir=DATASET_DIR,
-        dataset_type=fo.types.ImageDirectory,
-        name=DATASET_NAME,)
-     dataset.persistent = True
-     return dataset
+def collect_image_paths(root: str) -> list[str]:
+    r = Path(root)
+    return [str(p) for p in r.rglob("*")
+            if p.is_file() and p.suffix.lower() in IMG_EXTS]
 
-if DATASET_NAME in fo.list_datasets():
-    dataset = fo.load_dataset(DATASET_NAME)
-    sample_count = dataset.count()
-    images_count = count_images(DATASET_DIR)
-    answer = ask_yn(
-                    f"\nDataset '{DATASET_NAME}' already exists in DB -> {DB_DIR}\n"
-                    f"Dataset samples:{sample_count} images in dir:{images_count}\n"
-                    f"Reimport samples from {DATASET_DIR}?",
-                    False
-                    )
-    if answer:
-        fo.delete_dataset(DATASET_NAME)
-        dataset = create_dataset_from_dir()
+def create_dataset_from_dir(root: str) -> fo.Dataset:
+    ds = fo.Dataset(name=DATASET_NAME)
+    paths = collect_image_paths(root)
+    ds.add_images(paths)   
+    ds.persistent = True
+    ds.save()
+    return ds
+
+def check_dataset_by_name (name: str) -> fo.Dataset:
+    if fo.dataset_exists(name):
+        return fo.load_dataset(name)
     else:
-        create_dataset_from_dir()
+        return None
 
-# sample_count = dataset.count()
-# print(f"Samples in dataset {sample_count}")
+def load_or_create_dataset(name: str, root: str) -> fo.Dataset:
+    ds = check_dataset_by_name(name)
+    if ds is None:
+        ds = create_dataset_from_dir(root, True)
+    else:
+        sample_count = ds.count()
+        images_count = count_images(DATASET_DIR)
+        import_images = ask_yn(
+                        f"\nDataset '{DATASET_NAME}' already exists in DB -> {DB_DIR}\n"
+                        f"Dataset samples:{sample_count} images in dir:{images_count}\n"
+                        f"Reimport samples from {DATASET_DIR}?",
+                        False
+                        )
+        if import_images:
+            paths = collect_image_paths(root)
+            ds.add_images(paths)
+            ds.save()
+            print(f"Dataset samples imported: {ds.count()}")
+    return ds
 
+def main():
 
-#session = fo.launch_app(dataset)
-#session.wait()
+    dataset_exists = fo.dataset_exists(DATASET_NAME)
+    print(f"dataset_exists = {dataset_exists}")
+
+    image_paths = collect_image_paths(DATASET_DIR)
+    if(len(image_paths)>0):
+        new_samples = []
+        for p in collect_image_paths(DATASET_DIR):
+            new_samples.append(fo.Sample(filepath=p))
+
+    if(dataset_exists):
+        dataset = fo.load_dataset(DATASET_NAME)
+        print(f"Dataset '{DATASET_NAME}' loaded from DB:{DB_DIR}"
+              f"\nSamples = {dataset.count()}")
+
+        if(dataset.count()<1 and len(new_samples)>0):
+            dataset.add_samples(new_samples)
+            dataset.save()
+            print(f"Samples added: {dataset.count()}")
+
+        else:
+            print(f"Existing dataset {dataset}")
+    else:
+        dataset = fo.Dataset(name=DATASET_NAME, persistent=True)
+        dataset.media_type = "image"
+        if(len(new_samples)>0):
+            dataset.add_samples(new_samples)
+            dataset.compute_metadata()
+            dataset.save()
+
+    # session = fo.launch_app(dataset)
+    # session.wait()
+
+if __name__ == "__main__":
+    main()
