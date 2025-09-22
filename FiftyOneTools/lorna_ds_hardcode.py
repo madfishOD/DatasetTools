@@ -7,6 +7,8 @@ TASK_TOKEN = "<DETAILED_CAPTION>"   # Florence-2 task for captions
 BATCH_SIZE = 1                      # 1 is safest; you can try >1 on big GPUs
 MAX_NEW_TOKENS = 96                 # caption length budget
 CAPTION_FIELD = "florence2_caption"
+UNIQUENESS_FIELD = "uniqueness"   # where we store/read uniqueness
+
 
 # -------------- Zero Shot Labels ------------
 CAPTION_FIELD = "florence2_caption"# your text field
@@ -15,6 +17,10 @@ TAG_FIELD     = "sample tags"      # optional: also push high-confidence labels 
 
 EMB_FIELD = "clip_emb"     # where to store vectors
 UMAP_KEY  = "umap_all"     # brain key to find in App
+
+# Similarity / near-dup defaults
+SIM_BRAIN_KEY_DEFAULT = "clip_sim"
+SIM_MODEL_DEFAULT = "clip-vit-base32-torch"
 
 # Provide the label set you want to detect
 CANDIDATE_LABELS = [
@@ -109,7 +115,7 @@ def check_dataset_by_name (name: str) -> fo.Dataset:
 def load_or_create_dataset(name: str, root: str) -> fo.Dataset:
     ds = check_dataset_by_name(name)
     if ds is None:
-        ds = create_dataset_from_dir(root, True)
+        ds = create_dataset_from_dir(root)
     else:
         sample_count = ds.count()
         images_count = count_images(DATASET_DIR)
@@ -369,6 +375,161 @@ def ensure_umap(ds: fo.Dataset, force: bool = False) -> None:
     )
     print("[umap] Done.")
 
+def ensure_uniqueness(ds: fo.Dataset, field: str = UNIQUENESS_FIELD):
+    # compute only if field missing or partially missing
+    if field not in ds.get_field_schema() or ds.exists(field).count() < ds.count():
+        fob.compute_uniqueness(ds, uniqueness_field=field)
+
+def auto_tag_by_percentiles(
+    ds: fo.Dataset,
+    field: str = UNIQUENESS_FIELD,
+    p_low: float = 10.0,
+    p_high: float = 90.0,
+    low_tags=("keep_core","low_unique"),
+    high_tags=("review_keep","outlier"),
+    clear_previous=True,
+):
+    """Tag low/high percentile samples by a numeric field (default: 'uniqueness')."""
+    if ds.count() == 0:
+        return 0, 0
+
+    ensure_uniqueness(ds, field=field)
+
+    vals = np.array(ds.values(field), dtype=float)
+    vals = vals[np.isfinite(vals)]
+    if vals.size == 0:
+        raise RuntimeError(f"No numeric values found in field '{field}'")
+
+    q_low, q_high = np.quantile(vals, [p_low / 100.0, p_high / 100.0])
+
+    if clear_previous:
+        to_clear = list(set(low_tags) | set(high_tags))
+        if to_clear:
+            ds.match_tags(to_clear).untag_samples(to_clear)
+
+    lo = ds.match(F(field) <= float(q_low))
+    hi = ds.match(F(field) >= float(q_high))
+
+    if low_tags:
+        lo.tag_samples(list(low_tags))
+    if high_tags:
+        hi.tag_samples(list(high_tags))
+    ds.save()
+    return lo.count(), hi.count()
+
+# -------- similarity / near-duplicate -------- #
+def ensure_similarity_index(ds: fo.Dataset, brain_key: str, model_name: str):
+    """Compute similarity index if missing."""
+    if brain_key not in ds.list_brain_runs():
+        fob.compute_similarity(ds, brain_key=brain_key, model=model_name)
+
+def tag_near_duplicates(
+    ds: fo.Dataset,
+    brain_key: str = SIM_BRAIN_KEY_DEFAULT,
+    model_name: str = SIM_MODEL_DEFAULT,
+    k: int = 6,
+    max_dist: float = 0.20,
+    seed_tag: str = "seed",
+    dup_tag: str = "near_dup",
+    clear_previous: bool = True,
+):
+    """Tags one representative per group as `seed` and close neighbors as `near_dup`."""
+    if ds.count() == 0:
+        return (0, 0)
+
+    ensure_similarity_index(ds, brain_key, model_name)
+
+    if clear_previous:
+        ds.match_tags([seed_tag, dup_tag]).untag_samples([seed_tag, dup_tag])
+
+    seen = set()
+    seeds = 0
+    dups = 0
+    dist_field = "simdist"  # valid field name (cannot start with '_')
+
+    for s in ds:
+        if s.id in seen:
+            continue
+
+        view = ds.sort_by_similarity(
+            s.id, brain_key=brain_key, k=int(k) + 1, dist_field=dist_field
+        )
+
+        neighbors = [
+            r for r in view[1:]
+            if getattr(r, dist_field, None) is not None
+            and float(getattr(r, dist_field)) <= float(max_dist)
+        ]
+
+        if neighbors:
+            if seed_tag not in s.tags:
+                s.tags = list(set(s.tags + [seed_tag]))
+                s.save()
+            seeds += 1
+
+            for r in neighbors:
+                if dup_tag not in r.tags:
+                    r.tags = list(set(r.tags + [dup_tag]))
+                    r.save()
+                    dups += 1
+                seen.add(r.id)
+
+    # remove the temporary distance field
+    if dist_field in ds.get_field_schema():
+        ds.delete_sample_field(dist_field)
+
+    return (seeds, dups)
+
+def prune_near_dups(ds: fo.Dataset, dup_tag: str = "near_dup"):
+    """Delete all samples tagged as near-duplicates (does NOT delete files on disk)."""
+    view = ds.match_tags([dup_tag])
+    n = view.count()
+    if n > 0:
+        ds.delete_samples(view)
+    return n
+
+# -------- similarity density (kNN) -------- #
+def compute_sim_density(
+    ds: fo.Dataset,
+    brain_key: str,
+    model_name: str,
+    k: int = 12,
+    max_dist: Optional[float] = None,
+    out_field: str = "sim_density",
+):
+    """
+    Writes a density score per sample based on CLIP similarity:
+      score = 1 / (eps + mean distance to k nearest neighbors)
+      (optionally only neighbors within max_dist are used)
+
+    Then you can Embeddings -> Color by -> this field.
+    """
+    ensure_similarity_index(ds, brain_key, model_name)
+
+    temp = "simdist_tmp"
+    ids, scores = [], []
+
+    for s in ds:
+        v = ds.sort_by_similarity(s.id, brain_key=brain_key, k=int(k) + 1, dist_field=temp)
+        dists = [getattr(r, temp) for r in v[1:] if getattr(r, temp, None) is not None]
+        if max_dist is not None:
+            dists = [d for d in dists if d <= float(max_dist)]
+        score = 0.0 if not dists else 1.0 / (1e-6 + (sum(dists) / len(dists)))
+        ids.append(s.id)
+        scores.append(float(score))
+
+    # create field if missing
+    if out_field not in ds.get_field_schema():
+        ds.add_sample_field(out_field, fo.FloatField)
+
+    # values first, ids second
+    ds.set_values(out_field, scores, ids)
+
+    if temp in ds.get_field_schema():
+        ds.delete_sample_field(temp)
+
+    return len(scores)
+
 # -------------- Main ------------
 def main():
 
@@ -381,8 +542,50 @@ def main():
     caption_with_florence(dataset)
     labels_from_captions(dataset)
 
-    ensure_embeddings(dataset, force=True)
-    ensure_umap(dataset, force=True)
+    # 2) Ensure CLIP embeddings (once)
+    ensure_embeddings(dataset, force=False)
+
+    # 3) Build (or reuse) similarity index
+    ensure_similarity_index(
+        dataset,
+        brain_key=SIM_BRAIN_KEY_DEFAULT,
+        model_name=SIM_MODEL_DEFAULT,
+    )
+
+    # 4) Tag near-duplicate clusters
+    if ask_yn("Tag near-duplicates (seed='keep_core', dup='near_dup')?", default=True):
+        seeds, dups = tag_near_duplicates(
+            dataset,
+            brain_key=SIM_BRAIN_KEY_DEFAULT,
+            model_name=SIM_MODEL_DEFAULT,
+            k=6,                # neighbors to inspect per seed
+            max_dist=0.20,      # tighter -> fewer dups
+            seed_tag="keep_core",
+            dup_tag="near_dup",
+            clear_previous=True,
+        )
+        print(f"[sim] Groups tagged — seeds: {seeds}, near_dups: {dups}")
+
+        # Optional: quick prune prompt
+        if dups and ask_yn(f"Prune {dups} samples tagged 'near_dup' (DB only, not files)?", default=False):
+            n = prune_near_dups(dataset, dup_tag="near_dup")
+            print(f"[sim] Pruned {n} near-dup samples")
+
+    # 5) (Optional) Density score for “crowdedness” coloring in Embeddings
+    if ask_yn("Compute similarity density field 'sim_density' for coloring in UMAP?", default=False):
+        n = compute_sim_density(
+            dataset,
+            brain_key=SIM_BRAIN_KEY_DEFAULT,
+            model_name=SIM_MODEL_DEFAULT,
+            k=12,
+            max_dist=None,          # or set a cap like 0.25
+            out_field="sim_density"
+        )
+        print(f"[sim] Wrote density scores for {n} samples -> field 'sim_density'")
+
+    # 6) (Optional) UMAP so you can Curate ▸ Embeddings immediately
+    if ask_yn("Compute/reuse UMAP visualization?", default=True):
+        ensure_umap(dataset, force=False)
 
     session = fo.launch_app(dataset)
     session.wait()
