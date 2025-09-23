@@ -1,7 +1,7 @@
 ﻿IMG_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
 DB_DIR = r"D:\FiftyOneDB"
-DATASET_DIR = r"E:\Work\Lorna_daaset_extension"
-DATASET_NAME = "lorna_ext"
+DATASET_DIR = r"E:\Work\Lorna_daaset_extension\Lorna_ext_filtered"
+DATASET_NAME = "lorna_ext_filtered"
 MODEL_ID = "microsoft/Florence-2-large"  # or "microsoft/Florence-2-large"
 TASK_TOKEN = "<DETAILED_CAPTION>"   # Florence-2 task for captions
 BATCH_SIZE = 1                      # 1 is safest; you can try >1 on big GPUs
