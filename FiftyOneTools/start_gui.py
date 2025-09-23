@@ -23,9 +23,11 @@ class LabelBig(customtkinter.CTkLabel):
         self.configure(font=customtkinter.CTkFont(size=12, weight="bold"))
 
 class SelectedDatasetFrame(customtkinter.CTkFrame):
-    def __init__(self, master, on_open):
-        super().__init__(master)      
+    def __init__(self, master, on_open, on_delete):
+        super().__init__(master)  
+        
         self.on_open = on_open
+        self.on_delete = on_delete
 
         # Layout
         self.grid_columnconfigure(1, weight=1, minsize=200)  # dropdown grows
@@ -44,13 +46,19 @@ class SelectedDatasetFrame(customtkinter.CTkFrame):
         self.label_button = LabelBig(self, "Refresh datasets list:")
         self.label_button.grid(row=0, column=2, padx=10, pady=10, sticky="e")
 
-        self.button = customtkinter.CTkButton(self, text="Refresh", command=self.refresh_datasets)
-        self.button.grid(row=0, column=3, padx=10, pady=10, sticky="w")
+        self.button_refresh = customtkinter.CTkButton(self, text="Refresh", command=self.refresh_datasets)
+        self.button_refresh.grid(row=0, column=3, padx=10, pady=10, sticky="w")
 
-        self.button = customtkinter.CTkButton(self, text="Open", command=self._open_clicked)
-        is_valid_to_open = bool(self.selected_dataset.get() in fiftyone.list_datasets())
-        self.button.configure(state="normal" if is_valid_to_open else "disabled")
-        self.button.grid(row=0, column=4, padx=10, pady=10, sticky="w")
+        is_valid_dataset = bool(self.selected_dataset.get() in fiftyone.list_datasets())
+
+        self.button_open = customtkinter.CTkButton(self, text="Open", command=self._open_clicked)  
+        self.button_open.configure(state="normal" if is_valid_dataset else "disabled", width=100)
+        self.button_open.grid(row=0, column=4, padx=10, pady=10, sticky="w")
+
+        self.button_delete = customtkinter.CTkButton(self, text="Delete", command=self._delete_clicked)
+        self.button_delete.configure(state="normal" if is_valid_dataset else "disabled")
+        self.button_delete.grid(row=0, column=5, padx=10, pady=10, sticky="w")
+        self.button_delete.configure(fg_color="#FF5C5C", hover_color="#FF1E1E", width=50)
 
     def refresh_datasets(self):
         dataset_list = fiftyone.list_datasets()
@@ -59,6 +67,11 @@ class SelectedDatasetFrame(customtkinter.CTkFrame):
             name = self.selected_dataset.get()
             if name and name != "(no datasets found)":
                 self.on_open(name)
+
+    def _delete_clicked(self):
+            name = self.selected_dataset.get()
+            if name and name != "(no datasets found)":
+                self.on_delete(name)
 
 class App(customtkinter.CTk):
     def __init__(self):
@@ -74,8 +87,19 @@ class App(customtkinter.CTk):
         # layout
         self.grid_columnconfigure(0, weight=1)
 
-        self.SelectedDatasetFrame = SelectedDatasetFrame(self, on_open=self.open_dataset)
-        self.SelectedDatasetFrame.grid(row=0, column=0, padx=20, pady=20, sticky="nsew")
+        self.selected_dataset_frame = SelectedDatasetFrame(self, on_open=self.open_dataset, on_delete=self.delete_dataset)
+        self.selected_dataset_frame.grid(row=0, column=0, padx=20, pady=20, sticky="nsew")
+
+        self.refresh_button = customtkinter.CTkButton(self, text="Refresh Session", command=self.refresh_session)
+        self.refresh_button.grid(row=1, column=0, padx=20, pady=20, sticky="nsew")
+  
+    def refresh_session(self):
+        try:
+            self.session.refresh()
+           
+        except Exception as e:
+            print(f"Error refreshing session: {e}")
+            return
 
     def open_dataset(self, name: str):
         try:
@@ -90,6 +114,13 @@ class App(customtkinter.CTk):
             # first time: create a new App session
             self.session = fiftyone.launch_app(ds)
             self.current_dataset = ds
+
+    def delete_dataset(self, name: str):
+        try:
+            fiftyone.delete_dataset(name)
+        except Exception as e:
+            print(f"Error deleting dataset '{name}': {e}")
+            return
    
         
 app = App()
