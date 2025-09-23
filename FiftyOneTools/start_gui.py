@@ -22,19 +22,18 @@ class LabelBig(customtkinter.CTkLabel):
         
         self.configure(font=customtkinter.CTkFont(size=12, weight="bold"))
 
-class App(customtkinter.CTk):
-    def __init__(self):
-        super().__init__()
+class SelectedDatasetFrame(customtkinter.CTkFrame):
+    def __init__(self, master):
+        super().__init__(master)
 
-        self.title("FiftyOne Tools GUI")
-        self.geometry("740x480")
-        #self.grid_columnconfigure(0, weight=1)
-        #self.grid_rowconfigure((0, 1), weight=1)
-        
+        # Layout
+        self.grid_columnconfigure(1, weight=1)  # dropdown grows
+        self.grid_columnconfigure(2, weight=0)  # refresh button
+    
         self.refresh_datasets()
         dataset_list = fiftyone.list_datasets()
 
-        self.label0 = LabelBig(self, text="Select Dataset:")
+        self.label0 = LabelBig(self, text="Selected Dataset:")
         self.label0.grid(row=0, column=0, padx=10, pady=10, sticky="e")
 
         self.selected_dataset = tkinter.StringVar(value=dataset_list[0] if dataset_list else "")
@@ -47,12 +46,23 @@ class App(customtkinter.CTk):
         self.button = customtkinter.CTkButton(self, text="Refresh", command=self.refresh_datasets)
         self.button.grid(row=0, column=3, padx=10, pady=10, sticky="w")
 
-    def refresh_callback(self):
-        print("button pressed")
-
     def refresh_datasets(self):
         dataset_list = fiftyone.list_datasets()
 
+class App(customtkinter.CTk):
+    def __init__(self):
+        super().__init__()
 
+        self.title("FiftyOne Tools GUI")
+        self.geometry("740x480")
+        #self.grid_columnconfigure(0, weight=1)
+        #self.grid_rowconfigure((0, 1), weight=1)
+
+        # layout
+        self.grid_columnconfigure(0, weight=1)
+
+        self.SelectedDatasetFrame = SelectedDatasetFrame(self)
+        self.SelectedDatasetFrame.grid(row=0, column=0, padx=20, pady=20, sticky="nsew")
+        
 app = App()
 app.mainloop()
