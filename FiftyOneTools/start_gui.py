@@ -105,8 +105,9 @@ class SelectedDatasetFrame(customtkinter.CTkFrame):
         self.grid_columnconfigure(1, weight=1, minsize=200)  # dropdown grows
         self.grid_columnconfigure(2, weight=0)  # refresh button
     
-        self.refresh_datasets()
-        self.dataset_list = fiftyone.list_datasets()
+        #self.refresh_datasets()
+        #self.dataset_list = fiftyone.list_datasets()
+        self.dataset_list = None
 
         self.label0 = LabelBig(self, text="Selected Dataset:")
         self.label0.grid(row=0, column=0, padx=10, pady=10, sticky="e")
@@ -132,8 +133,28 @@ class SelectedDatasetFrame(customtkinter.CTkFrame):
         self.button_delete.grid(row=0, column=5, padx=10, pady=10, sticky="w")
         self.button_delete.configure(fg_color="#FF5C5C", hover_color="#FF1E1E", width=50)
 
+        self.refresh_datasets()
+
     def refresh_datasets(self):
-        self.dataset_list = fiftyone.list_datasets()
+        print("Refreshing dataset list")
+        names = fiftyone.list_datasets()
+
+        # 1) Update dropdown items
+        if names:
+            self.dataset_selector.configure(values=names)
+            # keep current if still valid; else set first
+            cur = self.selected_dataset.get()
+            self.selected_dataset.set(cur if cur in names else names[0])
+            is_valid_dataset = True
+        else:
+            placeholder = ["(no datasets found)"]
+            self.dataset_selector.configure(values=placeholder, state="disabled")
+            self.selected_dataset.set(placeholder[0])
+            is_valid_dataset = False
+
+        # 2) Update buttons
+        self.button_open.configure(state="normal" if is_valid_dataset else "disabled")
+        self.button_delete.configure(state="normal" if is_valid_dataset else "disabled")
 
     def _open_clicked(self):
             name = self.selected_dataset.get()
