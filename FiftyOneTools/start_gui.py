@@ -46,17 +46,29 @@ class SelectedDatasetFrame(customtkinter.CTkFrame):
         self.button = customtkinter.CTkButton(self, text="Refresh", command=self.refresh_datasets)
         self.button.grid(row=0, column=3, padx=10, pady=10, sticky="w")
 
+        self.button = customtkinter.CTkButton(self, text="Open", command=self.open_dataset)
+        is_valid_to_open = bool(self.selected_dataset.get() in fiftyone.list_datasets())
+        self.button.configure(state="normal" if is_valid_to_open else "disabled")
+        self.button.grid(row=0, column=4, padx=10, pady=10, sticky="w")
+
     def refresh_datasets(self):
         dataset_list = fiftyone.list_datasets()
+
+    def open_dataset(self):
+        dataset_name = self.selected_dataset.get()
+        if dataset_name:
+            try:
+                dataset = fiftyone.load_dataset(dataset_name)
+                fiftyone.launch_app(dataset)
+            except Exception as e:
+                print(f"Error loading dataset '{dataset_name}': {e}")
 
 class App(customtkinter.CTk):
     def __init__(self):
         super().__init__()
 
         self.title("FiftyOne Tools GUI")
-        self.geometry("740x480")
-        #self.grid_columnconfigure(0, weight=1)
-        #self.grid_rowconfigure((0, 1), weight=1)
+        self.geometry("840x480")
 
         # layout
         self.grid_columnconfigure(0, weight=1)
