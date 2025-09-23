@@ -27,7 +27,7 @@ class SelectedDatasetFrame(customtkinter.CTkFrame):
         super().__init__(master)
 
         # Layout
-        self.grid_columnconfigure(1, weight=1)  # dropdown grows
+        self.grid_columnconfigure(1, weight=1, minsize=200)  # dropdown grows
         self.grid_columnconfigure(2, weight=0)  # refresh button
     
         self.refresh_datasets()
