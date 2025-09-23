@@ -8,10 +8,6 @@ os.environ["FIFTYONE_DATABASE_DIR"] = r"D:\FiftyOneDB"
 
 import fiftyone
 
-# GUI methods
-def refresh_datasets():
-    dataset_list = fiftyone.list_datasets() 
-
 # System settings
 customtkinter.set_appearance_mode("System")  # Modes: "System" (standard), "Dark", "Light"
 customtkinter.set_default_color_theme("dark-blue")  # Themes: "blue" (standard), "dark-blue", "green"
@@ -21,6 +17,82 @@ class LabelBig(customtkinter.CTkLabel):
         super().__init__(master, text=text)
         
         self.configure(font=customtkinter.CTkFont(size=12, weight="bold"))
+
+class ConfirmDialog(customtkinter.CTkToplevel):
+    """
+    Modal Yes/No dialog. Use ask_confirm(...) to get a bool quickly.
+    """
+    def __init__(
+        self,
+        master,
+        title="Confirm",
+        message="Are you sure?",
+        yes_text="Yes",
+        no_text="No",
+        width=380,
+        height=160,
+    ):
+        super().__init__(master)
+        self.result: bool = False
+
+        # basic window setup
+        self.title(title)
+        self.resizable(False, False)
+        self.transient(master)          # stay on top of parent
+        self.grab_set()                 # modal
+        self.protocol("WM_DELETE_WINDOW", self._on_no)
+
+        # center on parent
+        self.update_idletasks()
+        try:
+            mx = master.winfo_rootx()
+            my = master.winfo_rooty()
+            mw = master.winfo_width()
+            mh = master.winfo_height()
+        except Exception:
+            mx, my, mw, mh = 100, 100, 800, 600
+        x = mx + (mw - width) // 2
+        y = my + (mh - height) // 2
+        self.geometry(f"{width}x{height}+{max(0,x)}+{max(0,y)}")
+
+        # layout
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+
+        msg = customtkinter.CTkLabel(self, text=message, wraplength=width-40, justify="center")
+        msg.grid(row=0, column=0, padx=16, pady=(18, 10), sticky="nsew")
+
+        btns = customtkinter.CTkFrame(self)
+        btns.grid(row=1, column=0, pady=(6, 14))
+        yes = customtkinter.CTkButton(btns, text=yes_text, width=90, command=self._on_yes)
+        no  = customtkinter.CTkButton(btns, text=no_text,  width=90, command=self._on_no)
+        yes.grid(row=0, column=0, padx=6)
+        no.grid(row=0, column=1, padx=6)
+
+        # keyboard shortcuts
+        self.bind("<Return>", lambda e: self._on_yes())
+        self.bind("<Escape>", lambda e: self._on_no())
+
+        # focus
+        self.after(50, yes.focus_set)
+
+    def _on_yes(self):
+        self.result = True
+        self.destroy()
+
+    def _on_no(self):
+        self.result = False
+        self.destroy()
+
+
+def ask_confirm(master, title="Confirm", message="Are you sure?", **kwargs) -> bool:
+    """
+    Opens a modal confirm and returns True/False.
+    kwargs are passed to ConfirmDialog (yes_text, no_text, width, height).
+    """
+    dlg = ConfirmDialog(master, title=title, message=message, **kwargs)
+    master.wait_window(dlg)
+    return dlg.result
 
 class SelectedDatasetFrame(customtkinter.CTkFrame):
     def __init__(self, master, on_open, on_delete):
@@ -34,13 +106,13 @@ class SelectedDatasetFrame(customtkinter.CTkFrame):
         self.grid_columnconfigure(2, weight=0)  # refresh button
     
         self.refresh_datasets()
-        dataset_list = fiftyone.list_datasets()
+        self.dataset_list = fiftyone.list_datasets()
 
         self.label0 = LabelBig(self, text="Selected Dataset:")
         self.label0.grid(row=0, column=0, padx=10, pady=10, sticky="e")
 
-        self.selected_dataset = tkinter.StringVar(value=dataset_list[0] if dataset_list else "")
-        self.dataset_selector = customtkinter.CTkOptionMenu(self, values=dataset_list, variable=self.selected_dataset)
+        self.selected_dataset = tkinter.StringVar(value=self.dataset_list[0] if self.dataset_list else "")
+        self.dataset_selector = customtkinter.CTkOptionMenu(self, values=self.dataset_list, variable=self.selected_dataset)
         self.dataset_selector.grid(row=0, column=1, padx=10, pady=10, sticky="w")
 
         self.label_button = LabelBig(self, "Refresh datasets list:")
@@ -61,7 +133,7 @@ class SelectedDatasetFrame(customtkinter.CTkFrame):
         self.button_delete.configure(fg_color="#FF5C5C", hover_color="#FF1E1E", width=50)
 
     def refresh_datasets(self):
-        dataset_list = fiftyone.list_datasets()
+        self.dataset_list = fiftyone.list_datasets()
 
     def _open_clicked(self):
             name = self.selected_dataset.get()
@@ -116,11 +188,23 @@ class App(customtkinter.CTk):
             self.current_dataset = ds
 
     def delete_dataset(self, name: str):
+        ok = ask_confirm(
+            self,
+            title="Delete dataset?",
+            message=f"Delete '{name}' from the FiftyOne DB?\n\n"
+                    "Note: this removes the dataset from the DB only,\n"
+                    "original image files are not deleted."
+        )
+        if not ok:
+            return
+
         try:
             fiftyone.delete_dataset(name)
+            print(f"Deleted dataset '{name}'")
+            # refresh your dropdown after deletion
+            self.selected_dataset_frame.refresh_datasets()
         except Exception as e:
             print(f"Error deleting dataset '{name}': {e}")
-            return
    
         
 app = App()
