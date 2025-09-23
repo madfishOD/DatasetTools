@@ -23,8 +23,9 @@ class LabelBig(customtkinter.CTkLabel):
         self.configure(font=customtkinter.CTkFont(size=12, weight="bold"))
 
 class SelectedDatasetFrame(customtkinter.CTkFrame):
-    def __init__(self, master):
-        super().__init__(master)
+    def __init__(self, master, on_open):
+        super().__init__(master)      
+        self.on_open = on_open
 
         # Layout
         self.grid_columnconfigure(1, weight=1, minsize=200)  # dropdown grows
@@ -46,7 +47,7 @@ class SelectedDatasetFrame(customtkinter.CTkFrame):
         self.button = customtkinter.CTkButton(self, text="Refresh", command=self.refresh_datasets)
         self.button.grid(row=0, column=3, padx=10, pady=10, sticky="w")
 
-        self.button = customtkinter.CTkButton(self, text="Open", command=self.open_dataset)
+        self.button = customtkinter.CTkButton(self, text="Open", command=self._open_clicked)
         is_valid_to_open = bool(self.selected_dataset.get() in fiftyone.list_datasets())
         self.button.configure(state="normal" if is_valid_to_open else "disabled")
         self.button.grid(row=0, column=4, padx=10, pady=10, sticky="w")
@@ -54,18 +55,18 @@ class SelectedDatasetFrame(customtkinter.CTkFrame):
     def refresh_datasets(self):
         dataset_list = fiftyone.list_datasets()
 
-    def open_dataset(self):
-        dataset_name = self.selected_dataset.get()
-        if dataset_name:
-            try:
-                dataset = fiftyone.load_dataset(dataset_name)
-                fiftyone.launch_app(dataset)
-            except Exception as e:
-                print(f"Error loading dataset '{dataset_name}': {e}")
+    def _open_clicked(self):
+            name = self.selected_dataset.get()
+            if name and name != "(no datasets found)":
+                self.on_open(name)
 
 class App(customtkinter.CTk):
     def __init__(self):
         super().__init__()
+
+        # The shared session handle (None until first open)
+        self.session: fiftyone.Session | None = None
+        self.current_dataset: fiftyone.Dataset | None = None
 
         self.title("FiftyOne Tools GUI")
         self.geometry("840x480")
@@ -73,8 +74,23 @@ class App(customtkinter.CTk):
         # layout
         self.grid_columnconfigure(0, weight=1)
 
-        self.SelectedDatasetFrame = SelectedDatasetFrame(self)
+        self.SelectedDatasetFrame = SelectedDatasetFrame(self, on_open=self.open_dataset)
         self.SelectedDatasetFrame.grid(row=0, column=0, padx=20, pady=20, sticky="nsew")
+
+    def open_dataset(self, name: str):
+        try:
+            ds = fiftyone.load_dataset(name)
+
+        except Exception as e:
+            print(f"Error loading dataset '{name}': {e}")
+            return
+
+        self.current_dataset = ds
+        if self.session is None:
+            # first time: create a new App session
+            self.session = fiftyone.launch_app(ds)
+            self.current_dataset = ds
+   
         
 app = App()
 app.mainloop()
