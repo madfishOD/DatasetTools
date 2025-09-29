@@ -133,6 +133,15 @@ class SelectedDatasetFrame(customtkinter.CTkFrame):
         self.button_delete.grid(row=0, column=5, padx=10, pady=10, sticky="w")
         self.button_delete.configure(fg_color="#FF5C5C", hover_color="#FF1E1E", width=50)
 
+        self.smples_path_label = LabelBig(self, "Media Path:")
+        self.smples_path_label.grid(row=1, column=0, padx=10, pady=(0,10), sticky="w")
+        self.samples_path = customtkinter.StringVar(value="")
+        self.samples_path_entry = customtkinter.CTkEntry(self, textvariable=self.samples_path)
+        self.samples_path_entry.grid(row=1, column=1, columnspan=2, padx=10, pady=(10,10), sticky="ew")
+
+        self.button_browse = customtkinter.CTkButton(self, text="Browse", command=self._browse_clicked)
+        self.button_browse.grid(row=1, column=3, padx=10, pady=10, sticky="e")
+
         self.refresh_datasets()
 
     def refresh_datasets(self):
@@ -165,6 +174,9 @@ class SelectedDatasetFrame(customtkinter.CTkFrame):
             name = self.selected_dataset.get()
             if name and name != "(no datasets found)":
                 self.on_delete(name)
+
+    def _browse_clicked(self):
+        print("BROWSE")
 
 class App(customtkinter.CTk):
     def __init__(self):
