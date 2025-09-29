@@ -176,7 +176,12 @@ class SelectedDatasetFrame(customtkinter.CTkFrame):
                 self.on_delete(name)
 
     def _browse_clicked(self):
-        print("BROWSE")
+        dir_path = tkinter.filedialog.askdirectory()
+        if dir_path:  # Check if a directory was actually selected
+            self.samples_path.set(dir_path)
+            print(f"Media path selected: {dir_path}")
+        else:
+            print("No directory selected.")
 
 class App(customtkinter.CTk):
     def __init__(self):
