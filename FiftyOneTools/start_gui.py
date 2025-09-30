@@ -94,6 +94,18 @@ def ask_confirm(master, title="Confirm", message="Are you sure?", **kwargs) -> b
     master.wait_window(dlg)
     return dlg.result
 
+
+class MediaSamplesImportSettingsFrame(customtkinter.CTkFrame):
+    def __init__(self, master):
+        super().__init__(master)
+
+        # Create a vertical Scrollbar
+        scrollbar = tkinter.Scrollbar(self, orient='vertical')
+        scrollbar.pack(side='right', fill='y')
+
+
+
+
 class SelectedDatasetFrame(customtkinter.CTkFrame):
     def __init__(self, master, on_open, on_delete):
         super().__init__(master)  
@@ -200,8 +212,11 @@ class App(customtkinter.CTk):
         self.selected_dataset_frame = SelectedDatasetFrame(self, on_open=self.open_dataset, on_delete=self.delete_dataset)
         self.selected_dataset_frame.grid(row=0, column=0, padx=20, pady=20, sticky="nsew")
 
+        self.media_import_settings = MediaSamplesImportSettingsFrame(self)
+        self.media_import_settings.grid(row=1, column=0, padx=20, pady=20, sticky="nsew")
+
         self.refresh_button = customtkinter.CTkButton(self, text="Refresh Session", command=self.refresh_session)
-        self.refresh_button.grid(row=1, column=0, padx=20, pady=20, sticky="nsew")
+        self.refresh_button.grid(row=2, column=0, padx=20, pady=20, sticky="nsew")
   
     def refresh_session(self):
         try:
