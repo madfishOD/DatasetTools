@@ -1,6 +1,10 @@
 ﻿
+from dataclasses import asdict, dataclass
+import json
 import os
+from pathlib import Path
 import tkinter
+from typing import List
 import customtkinter
 
 # ---------- parse early flags so DB dir is set BEFORE importing fiftyone ----------
@@ -84,6 +88,34 @@ class ConfirmDialog(customtkinter.CTkToplevel):
         self.result = False
         self.destroy()
 
+@dataclass
+class TextMappingRule:
+    enabled: bool
+    sample_field: str          # e.g. "caption", "meta.notes"
+    text_source_prefix: str    # e.g. "cap_", "desc_", "tags_"
+
+class TextMappingsConfig:
+    def __init__(self, rules: List[TextMappingRule] | None = None):
+        self.rules: List[TextMappingRule] = rules or []
+
+    def to_dict(self) -> dict:
+        return {"rules": [asdict(r) for r in self.rules]}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "TextMappingsConfig":
+        rules = [TextMappingRule(**r) for r in d.get("rules", [])]
+        return cls(rules=rules)
+
+    def save(self, path: str | Path):
+        Path(path).write_text(json.dumps(self.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8")
+
+    @classmethod
+    def load(cls, path: str | Path) -> "TextMappingsConfig":
+        p = Path(path)
+        if not p.exists():
+            return cls()
+        d = json.loads(p.read_text(encoding="utf-8"))
+        return cls.from_dict(d)
 
 def ask_confirm(master, title="Confirm", message="Are you sure?", **kwargs) -> bool:
     """
@@ -96,14 +128,107 @@ def ask_confirm(master, title="Confirm", message="Are you sure?", **kwargs) -> b
 
 
 class MediaSamplesImportSettingsFrame(customtkinter.CTkFrame):
-    def __init__(self, master):
+    def __init__(self, master, config: TextMappingsConfig | None = None):
         super().__init__(master)
+        self._rows: list[dict] = []
 
-        # Create a vertical Scrollbar
-        scrollbar = tkinter.Scrollbar(self, orient='vertical')
-        scrollbar.pack(side='right', fill='y')
+        # Layout
+        self.grid_columnconfigure(0, weight=0)
+        self.grid_columnconfigure(1, weight=1)
+        self.grid_columnconfigure(2, weight=1)
+        self.grid_columnconfigure(3, weight=0)
 
+        # Header
+        customtkinter.CTkLabel(self, text="Enabled", width=80).grid(row=0, column=0, padx=8, pady=(8,4))
+        customtkinter.CTkLabel(self, text="Sample field", anchor="w").grid(row=0, column=1, padx=8, pady=(8,4), sticky="w")
+        customtkinter.CTkLabel(self, text="Text prefix", anchor="w").grid(row=0, column=2, padx=8, pady=(8,4), sticky="w")
 
+        # Scrollable list
+        self.list_frame = customtkinter.CTkScrollableFrame(self, height=220)
+        self.list_frame.grid(row=1, column=0, columnspan=4, padx=8, pady=(0,8), sticky="nsew")
+        self.grid_rowconfigure(1, weight=1)
+
+        # Buttons
+        self.add_btn = customtkinter.CTkButton(self, text="Add", width=90, command=self._add_blank_row)
+        self.add_btn.grid(row=2, column=0, padx=8, pady=(4,10))
+
+        self.remove_btn = customtkinter.CTkButton(self, text="Remove Selected", width=150, command=self._remove_selected)
+        self.remove_btn.grid(row=2, column=1, padx=8, pady=(4,10), sticky="w")
+
+        # Load initial
+        self.set_config(config or TextMappingsConfig())
+
+    def _add_blank_row(self, init: TextMappingRule | None = None):
+        r = init or TextMappingRule(True, "caption", "cap_")
+
+        row_index = len(self._rows)
+        # Each row has: select checkbox (for remove), enabled checkbox, field entry, prefix entry
+        # A small “select” checkbox to mark for removal:
+        sel_var = tkinter.BooleanVar(value=False)
+        sel_cb = customtkinter.CTkCheckBox(self.list_frame, text="", variable=sel_var, width=20)
+        sel_cb.grid(row=row_index, column=0, padx=4, pady=4, sticky="w")
+
+        en_var = tkinter.BooleanVar(value=r.enabled)
+        en_cb = customtkinter.CTkCheckBox(self.list_frame, text="", variable=en_var, width=20)
+        en_cb.grid(row=row_index, column=1, padx=8, pady=4, sticky="w")
+
+        sf_var = tkinter.StringVar(value=r.sample_field)
+        sf_entry = customtkinter.CTkEntry(self.list_frame, textvariable=sf_var, width=220)
+        sf_entry.grid(row=row_index, column=2, padx=8, pady=4, sticky="ew")
+
+        tp_var = tkinter.StringVar(value=r.text_source_prefix)
+        tp_entry = customtkinter.CTkEntry(self.list_frame, textvariable=tp_var, width=160)
+        tp_entry.grid(row=row_index, column=3, padx=8, pady=4, sticky="ew")
+
+        self.list_frame.grid_columnconfigure(2, weight=1)
+        self.list_frame.grid_columnconfigure(3, weight=0)
+
+        self._rows.append({
+            "sel": sel_var,
+            "enabled": en_var,
+            "sample_field": sf_var,
+            "prefix": tp_var,
+            "widgets": (sel_cb, en_cb, sf_entry, tp_entry),
+        })
+
+    def _remove_selected(self):
+        keep = []
+        for rd in self._rows:
+            if rd["sel"].get():
+                # destroy widgets
+                for w in rd["widgets"]:
+                    try: w.destroy()
+                    except: pass
+            else:
+                keep.append(rd)
+        self._rows = keep
+        # re-pack to compact rows
+        for i, rd in enumerate(self._rows):
+            for j, w in enumerate(rd["widgets"]):
+                w.grid_configure(row=i)
+
+    def get_config(self) -> TextMappingsConfig:
+        rules: list[TextMappingRule] = []
+        for rd in self._rows:
+            rule = TextMappingRule(
+                enabled=bool(rd["enabled"].get()),
+                sample_field=rd["sample_field"].get().strip(),
+                text_source_prefix=rd["prefix"].get().strip(),
+            )
+            if rule.sample_field and rule.text_source_prefix:
+                rules.append(rule)
+        return TextMappingsConfig(rules=rules)
+
+    def set_config(self, cfg: TextMappingsConfig):
+        # clear current
+        for rd in self._rows:
+            for w in rd["widgets"]:
+                try: w.destroy()
+                except: pass
+        self._rows = []
+        # add rows
+        for r in cfg.rules:
+            self._add_blank_row(r)
 
 
 class SelectedDatasetFrame(customtkinter.CTkFrame):
