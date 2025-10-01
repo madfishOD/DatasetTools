@@ -4,10 +4,15 @@ import os
 
 venv_dir = "venv"
 python_exe = os.path.join(venv_dir, "Scripts", "python.exe")
+fo_dependencies = "fo_dependencies.txt"
 
 def run(cmd):
     print(f"> Running: {' '.join(cmd)}")
     subprocess.check_call(cmd)
+
+def read_dependencies(file_path):
+    with open(file_path, "r") as f:
+        return [line.strip() for line in f if line.strip() and not line.strip().startswith("#")]
 
 def main():
     if not os.path.exists(venv_dir):
@@ -17,8 +22,16 @@ def main():
     print("Upgrading pip...")
     run([python_exe, "-m", "pip", "install", "--upgrade", "pip"])
 
-    print("Installing FiftyOne, transformers, and torch...")
-    run([python_exe, "-m", "pip", "install", "fiftyone", "transformers", "torch", "hf_xet", "accelerate"])
+    print("Installing FiftyOne...")
+    run([python_exe, "-m", "pip", "install", "fiftyone"])
+
+    print("Upgrading FiftyOne...")
+    run([python_exe, "-m", "pip", "install", "--upgrade", "fiftyone"])
+
+    print(f"Reading dependencies from '{fo_dependencies}'...")
+    deps = read_dependencies("fo_dependencies.txt")
+    print(f"Installing: {deps}")
+    run([python_exe, "-m", "pip", "install"] + deps)
 
     print("\n✅ Setup complete. To activate the environment, run:")
     print(f"    {os.path.join(venv_dir, 'Scripts', 'activate.bat')}")
