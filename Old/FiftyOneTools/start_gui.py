@@ -165,7 +165,7 @@ class MediaSamplesImportSettingsFrame(customtkinter.CTkFrame):
         # Each row has: select checkbox (for remove), enabled checkbox, field entry, prefix entry
         # A small “select” checkbox to mark for removal:
         sel_var = tkinter.BooleanVar(value=False)
-        sel_cb = customtkinter.CTkCheckBox(self.list_frame, text="", variable=sel_var, width=20)
+        sel_cb = customtkinter.CTkCheckBox(self.list_frame, text="Selected", variable=sel_var, width=20)
         sel_cb.grid(row=row_index, column=0, padx=4, pady=4, sticky="w")
 
         en_var = tkinter.BooleanVar(value=r.enabled)
