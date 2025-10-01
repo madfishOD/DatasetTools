@@ -1,11 +1,10 @@
-import shutil
 import subprocess
 import sys
 import os
 
 venv_dir = "venv"
 python_exe = os.path.join(venv_dir, "Scripts", "python.exe")
-plugins_repo = "fiftyone-plugins"
+plugins_repo = os.path.join(venv_dir, "fiftyone-plugins")
 core_plugins = [
     "annotation", "brain", "dashboard", "evaluation", "io",
     "indexes", "delegated", "runs", "utils", "zoo"
@@ -26,29 +25,25 @@ def install_core_plugins():
     print(" Installing FiftyOne Plugins")
     print("================================")
 
-    if not os.path.exists(plugins_repo):
-        print(f"Cloning {plugins_repo} repo...")
-        run(["git", "clone", "https://github.com/voxel51/fiftyone-plugins", plugins_repo])
-    else:
-        print(f"Using existing clone at '{plugins_repo}'")
+    plugin_install_script = """
+import fiftyone.plugins as fopl
+core_plugins = [
+    "annotation", "brain", "dashboard", "evaluation", "io",
+    "indexes", "delegated", "runs", "utils", "zoo"
+]
+for plugin_name in core_plugins:
+    print(f"> Installing plugin: {plugin_name}")
+    try:
+        fopl.download_plugin(
+            "https://github.com/voxel51/fiftyone-plugins",
+            plugin_names=[f"@voxel51/{plugin_name}"]
+        )
+    except Exception as e:
+        print(f"❌ Failed to install plugin {plugin_name}: {e}")
+"""
 
-    plugins_root = os.path.join(os.getcwd(), plugins_repo, "plugins")
-    fo_plugin_dir = os.path.join(os.getcwd(), venv_dir, "Lib", "site-packages", "fiftyone", "plugins", "local")
-
-    os.makedirs(fo_plugin_dir, exist_ok=True)
-
-    for plugin_name in core_plugins:
-        src = os.path.join(plugins_root, plugin_name)
-        dst = os.path.join(fo_plugin_dir, plugin_name)
-        print(f"> Installing plugin: {plugin_name}")
-        print(f"  Source: {src}")
-        print(f"  Destination: {dst}")
-        if os.path.exists(dst):
-            shutil.rmtree(dst)
-        if os.path.exists(src):
-            shutil.copytree(src, dst)
-        else:
-            print(f"❌ Plugin path does not exist: {src}")
+    run([python_exe, "-c", plugin_install_script])
+    
 
 def main():
     if not os.path.exists(venv_dir):
@@ -56,7 +51,7 @@ def main():
         run([sys.executable, "-m", "venv", venv_dir])
 
     print("Upgrading pip...")
-    run([python_exe, "-m", "pip", "install", "--upgrade", "pip"])
+    run([python_exe, "-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel", "build"])
 
     print("Installing FiftyOne...")
     run([python_exe, "-m", "pip", "install", "fiftyone"])
