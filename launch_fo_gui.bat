@@ -21,10 +21,6 @@ echo %VENV_DIR%
 echo.
 call "%VENV_DIR%\Scripts\activate.bat"
 
-echo Setting plugins directory to:
-echo %FIFTYONE_PLUGINS_DIR%
-echo.
-
 echo Launching FiftyOne App...
 echo (Close the web browser and this window to exit)
 echo.

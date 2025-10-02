@@ -18,11 +18,23 @@ set "SCRIPT_DIR=%~dp0"
 REM This path now correctly points to the plugins directory inside the venv folder.
 set "PLUGINS_DIR=%SCRIPT_DIR%venv\fiftyone_plugins"
 
+REM --- Set the FIFTYONE_DATABASE_DIR environment variable persistently ---
+echo.
+echo Setting persistent environment variable for database...
+REM This path now points to the fiftyone db directory the script root folder.
+set "DATABASE_DIR=%SCRIPT_DIR%\fiftyone_db"
+
 REM Convert to absolute path
 for %%i in ("%PLUGINS_DIR%") do set "ABS_PLUGINS_DIR=%%~fi"
+for %%i in ("%DATABASE_DIR%") do set "ABS_DATABASE_DIR=%%~fi"
 
 echo Setting FIFTYONE_PLUGINS_DIR to: %ABS_PLUGINS_DIR%
 setx FIFTYONE_PLUGINS_DIR "%ABS_PLUGINS_DIR%"
+
+echo Setting FIFTYONE_DATABASE_DIR to: %ABS_DATABASE_DIR%
+setx FIFTYONE_DATABASE_DIR "%ABS_DATABASE_DIR%"
+
+echo 
 
 echo.
 echo =====================================================================

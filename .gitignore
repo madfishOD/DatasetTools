@@ -1,4 +1,5 @@
 venv/
+fiftyone_db/
 fiftyone-plugins/
 /.venv
 /.vs
