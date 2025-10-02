@@ -11,16 +11,23 @@ core_plugins = [
     "indexes", "delegated", "runs", "utils", "zoo"
 ]
 
-print("================================")
-print(" Installing FiftyOne Core Plugins")
-print("================================")
+def install_core_plugins():
+    print("================================")
+    print(" Installing FiftyOne Core Plugins")
+    print("================================")
 
-for plugin_name in core_plugins:
-    print(f"> Installing plugin: {plugin_name}")
-    try:
-        fopl.download_plugin(
-            "https://github.com/voxel51/fiftyone-plugins",
-            plugin_names=[f"@voxel51/{plugin_name}"]
-        )
-    except Exception as e:
-        print(f"❌ Failed to install plugin {plugin_name}: {e}")
+    for plugin_name in core_plugins:
+        print(f"> Installing plugin: {plugin_name}")
+        try:
+            fopl.download_plugin(
+                "https://github.com/voxel51/fiftyone-plugins",
+                plugin_names=[f"@voxel51/{plugin_name}"]
+            )
+        except Exception as e:
+            print(f"❌ Failed to install plugin {plugin_name}: {e}")
+
+def main():
+    install_core_plugins()
+
+if __name__ == "__main__":
+    main()
