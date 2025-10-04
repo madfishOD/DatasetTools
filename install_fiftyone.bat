@@ -24,15 +24,25 @@ echo Setting persistent environment variable for database...
 REM This path now points to the fiftyone db directory the script root folder.
 set "DATABASE_DIR=%SCRIPT_DIR%\fiftyone_db"
 
+REM --- Set the FIFTYONE_MODEL_ZOO_DIR environment variable persistently ---
+echo.
+echo Setting persistent environment variable for database...
+REM This path now points to the fiftyone db directory the script root folder.
+set "ZOO_MODELS_DIR=%SCRIPT_DIR%\fiftyone_zoo_models"
+
 REM Convert to absolute path
 for %%i in ("%PLUGINS_DIR%") do set "ABS_PLUGINS_DIR=%%~fi"
 for %%i in ("%DATABASE_DIR%") do set "ABS_DATABASE_DIR=%%~fi"
+for %%i in ("%ZOO_MODELS_DIR%") do set "ABS_ZOO_MODELS_DIR=%%~fi"
 
 echo Setting FIFTYONE_PLUGINS_DIR to: %ABS_PLUGINS_DIR%
 setx FIFTYONE_PLUGINS_DIR "%ABS_PLUGINS_DIR%"
 
 echo Setting FIFTYONE_DATABASE_DIR to: %ABS_DATABASE_DIR%
 setx FIFTYONE_DATABASE_DIR "%ABS_DATABASE_DIR%"
+
+echo Setting FIFTYONE_MODEL_ZOO_DIR to: %ABS_DATABASE_DIR%
+setx FIFTYONE_MODEL_ZOO_DIR "%ABS_ZOO_MODELS_DIR%"
 
 echo 
 
