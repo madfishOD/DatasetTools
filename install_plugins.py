@@ -2,7 +2,8 @@ import fiftyone as fo
 import fiftyone.plugins as fopl
 import os
 
-plugins_dir = os.path.abspath("venv/fiftyone_plugins")
+# We run plugins installation before terminal reopen so use path from here
+plugins_dir = os.path.abspath("fiftyone_plugins")
 os.makedirs(plugins_dir, exist_ok=True)
 fo.config.plugins_dir = plugins_dir
 

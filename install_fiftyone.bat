@@ -6,17 +6,12 @@ echo.
 echo Installing FiftyOne and dependencies...
 python install_fiftyone.py
 
-REM --- Activate venv and install plugins ---
-echo.
-echo Installing FiftyOne plugins...
-venv\Scripts\python.exe install_plugins.py
-
 REM --- Set the FIFTYONE_PLUGINS_DIR environment variable persistently ---
 echo.
 echo Setting persistent environment variable for plugins...
 set "SCRIPT_DIR=%~dp0"
 REM This path now correctly points to the plugins directory inside the venv folder.
-set "PLUGINS_DIR=%SCRIPT_DIR%venv\fiftyone_plugins"
+set "PLUGINS_DIR=%SCRIPT_DIR%\fiftyone_plugins"
 
 REM --- Set the FIFTYONE_DATABASE_DIR environment variable persistently ---
 echo.
@@ -43,6 +38,11 @@ setx FIFTYONE_DATABASE_DIR "%ABS_DATABASE_DIR%"
 
 echo Setting FIFTYONE_MODEL_ZOO_DIR to: %ABS_DATABASE_DIR%
 setx FIFTYONE_MODEL_ZOO_DIR "%ABS_ZOO_MODELS_DIR%"
+
+REM --- Activate venv and install plugins ---
+echo.
+echo Installing FiftyOne plugins...
+venv\Scripts\python.exe install_plugins.py
 
 echo 
 

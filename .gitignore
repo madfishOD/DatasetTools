@@ -2,5 +2,4 @@ venv/
 fiftyone_db/
 fiftyone-plugins/
 fiftyone_zoo_models/
-/.venv
-/.vs
+fiftyone_plugins/@voxel51/
