@@ -29,7 +29,7 @@ def main():
     run([python_exe, "-m", "pip", "install", "fiftyone"])
 
     print("Upgrading FiftyOne...")
-    run([python_exe, "-m", "pip", "install", "--upgrade", "fiftyone"])
+    run([python_exe, "-m", "pip", "install", "-U", "fiftyone"])
 
     print(f"Reading dependencies from '{dependencies_file}'...")
     deps = read_dependencies("fo_dependencies.txt")
