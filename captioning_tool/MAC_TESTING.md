@@ -44,3 +44,5 @@ captioning_tool/runtime/mac/bin/python -m unittest discover -s captioning_tool -
 Фінальний результат: `captioning_tool/outputs/mac-beans-smoke12-final/review.html`. Пари — `dataset/data/`, метадані — `regions/*.json` у цьому output. Поле `ready` у поточному exporter означає готовність конфігурації trainer, тому для dataset-only воно `false`, навіть коли всі пари експортовані. Розклад у `training_plan.json` лишається старою евристикою, не персоналізованою порадою.
 
 Наступні перевірки: різні розміри та стилі, довші серії й memory pressure, регіони/SAM Tiny, Windows CUDA regression, потім GUI/resume. Загальний device path не означає, що всі ці комбінації вже перевірені.
+
+Продовження: 40 різноманітних фото COCO128 пройшли технічний captioning smoke, див. [COCO_TESTING.md](COCO_TESTING.md). За уточненням користувача подальші агентські прогони не включають візуального порівняння входів і результатів; перевіряються лише технічні інваріанти та метрики.

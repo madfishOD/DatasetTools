@@ -56,6 +56,7 @@ def parser():
  p.add_argument('--target-steps',type=positive);p.add_argument('--epochs',type=positive)
  p.add_argument('--learning-rate',type=float,default=1e-4);p.add_argument('--rank',type=positive,default=16)
  p.add_argument('--resolution',type=positive);p.add_argument('--caption-tokens',type=positive,default=320)
+ p.add_argument('--region-tokens',type=positive,default=1000,help='Maximum generated tokens for region JSON; increase for crowded scenes')
  p.add_argument('--interactive',action='store_true');p.add_argument('--check',action='store_true',help='Read-only preflight, no downloads or inference')
  p.add_argument('--download-models',action='store_true',help='Download captioning models only; no input required')
  p.add_argument('--rebase-output',type=Path,help='Update generated OneTrainer paths after moving an output folder')

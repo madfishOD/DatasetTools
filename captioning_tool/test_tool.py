@@ -6,7 +6,7 @@ from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 from auto_captioning_tool import discover,identifiers,parser
 from training_export import export_training,training_plan,rebase
-from engine import parse_regions,model_complete,ensure_models,model_path,caption_hit_limit
+from engine import parse_regions,model_complete,ensure_models,model_path,generation_hit_limit
 from devices import resolve_device
 class Checks(unittest.TestCase):
  def test_device_selection_and_no_silent_cpu_fallback(self):
@@ -19,9 +19,9 @@ class Checks(unittest.TestCase):
    fake.backends.mps.is_available=lambda:False
    with self.assertRaises(RuntimeError):resolve_device()
  def test_truncated_caption_detection(self):
-  self.assertTrue(caption_hit_limit([10,11,12],3,[2,3]))
-  self.assertFalse(caption_hit_limit([10,11,2],3,[2,3]))
-  self.assertFalse(caption_hit_limit([10,2],3,2))
+  self.assertTrue(generation_hit_limit([10,11,12],3,[2,3]))
+  self.assertFalse(generation_hit_limit([10,11,2],3,[2,3]))
+  self.assertFalse(generation_hit_limit([10,2],3,2))
  def test_default_prompts_exist(self):
   args=parser().parse_args([])
   for path in (args.prompt,args.system_prompt,args.region_prompt):

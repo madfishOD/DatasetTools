@@ -21,7 +21,7 @@ def model_path(cache,key,profile):
  # Preserve existing Quality caches; new Compact caches are revision-specific.
  return path/revisions[key] if profile=='compact' else path
 
-def caption_hit_limit(generated,limit,eos_token_id):
+def generation_hit_limit(generated,limit,eos_token_id):
  eos=eos_token_id if isinstance(eos_token_id,(list,tuple)) else [eos_token_id]
  return len(generated)>=limit and (not generated or generated[-1] not in eos)
 
@@ -105,53 +105,59 @@ def run_models(out,files,records,args,prompts):
     im=load_image(f);im.thumbnail((1024,1024))
     messages=[{'role':'user','content':[{'type':'image','image':im},{'type':'text','text':prompts['regions']}]}]
     inputs=processor.apply_chat_template(messages,tokenize=True,add_generation_prompt=True,return_dict=True,return_tensors='pt').to(device)
-    with torch.inference_mode():ids=model.generate(**inputs,max_new_tokens=1000,do_sample=False)
+    with torch.inference_mode():ids=model.generate(**inputs,max_new_tokens=args.region_tokens,do_sample=False)
     raw=processor.decode(ids[0,inputs['input_ids'].shape[1]:],skip_special_tokens=True)
     (out/'grounding_raw'/(f.stem+'.txt')).write_bytes(raw.encode('utf-8'))
+    generated=ids[0,inputs['input_ids'].shape[1]:].tolist()
+    if generation_hit_limit(generated,args.region_tokens,model.generation_config.eos_token_id):
+     raise ValueError('Region JSON reached token limit without EOS; raw response retained. Increase --region-tokens for this image.')
     chars=parse_regions(raw)
     for j,c in enumerate(chars,1):
      b=c['bbox'];c['id']=f'person_{j}';c['bbox_xyxy_pixels']=[round(b[k]*d['width' if k%2==0 else 'height']/1000) for k in range(4)]
-    d.update(characters=chars,grounding_model=repos['grounding'],grounding_revision=revisions['grounding'])
+    d.update(characters=chars,grounding_complete=True,grounding_model=repos['grounding'],grounding_revision=revisions['grounding'])
     print(f'REGIONS {i}/{len(valid)} {f.name}: {len(chars)}',flush=True)
    except Exception as e:failed(f,'regions',e)
    store(f)
   del model,processor,inputs,ids;release_memory(device)
-  path=model_path(args.models,'sam',args.profile)
-  processor=Sam2Processor.from_pretrained(path,local_files_only=True)
-  model=Sam2Model.from_pretrained(path,local_files_only=True).to(device).eval()
-  inputs=pred=all_masks=scores=None
-  for i,f in enumerate(valid,1):
-   d=records[f.name]
-   try:
-    im=load_image(f);masks=[];boxes=[c['bbox_xyxy_pixels'] for c in d['characters']]
-    if boxes:
-     inputs=processor(images=im,input_boxes=[boxes],return_tensors='pt').to(device)
-     with torch.inference_mode():pred=model(**inputs,multimask_output=True)
-     all_masks=processor.post_process_masks(pred.pred_masks.cpu(),inputs['original_sizes'])[0];scores=pred.iou_scores[0].detach().cpu()
+  grounded=[f for f in valid if records[f.name].get('grounding_complete')]
+  if not grounded:print('SKIP SAM: no successful grounding results',flush=True)
+  if grounded:
+   path=model_path(args.models,'sam',args.profile)
+   processor=Sam2Processor.from_pretrained(path,local_files_only=True)
+   model=Sam2Model.from_pretrained(path,local_files_only=True).to(device).eval()
+   inputs=pred=all_masks=scores=None
+   for i,f in enumerate(grounded,1):
+    d=records[f.name]
+    try:
+     im=load_image(f);masks=[];boxes=[c['bbox_xyxy_pixels'] for c in d['characters']]
+     if boxes:
+      inputs=processor(images=im,input_boxes=[boxes],return_tensors='pt').to(device)
+      with torch.inference_mode():pred=model(**inputs,multimask_output=True)
+      all_masks=processor.post_process_masks(pred.pred_masks.cpu(),inputs['original_sizes'])[0];scores=pred.iou_scores[0].detach().cpu()
+      for j,c in enumerate(d['characters']):
+       best=int(scores[j].argmax());mask=all_masks[j,best].numpy().astype(bool);masks.append(mask)
+       dest=out/'masks'/f.stem/(c['id']+'.png');dest.parent.mkdir(parents=True,exist_ok=True)
+       Image.fromarray(mask.astype('uint8')*255).save(dest)
+       c.update(mask=dest.relative_to(out).as_posix(),sam_predicted_iou=float(scores[j,best]),mask_area_fraction=float(mask.mean()))
+       if c['sam_predicted_iou']<.75:d['qa_flags'].append(c['id']+': low SAM score')
+       if mask.mean()<.005:d['qa_flags'].append(c['id']+': very small mask')
+      for j in range(len(masks)):
+       for k in range(j):
+        overlap=np.logical_and(masks[j],masks[k]).sum()/max(1,min(masks[j].sum(),masks[k].sum()))
+        if overlap>.25:d['qa_flags'].append(f'person_{k+1}/person_{j+1}: mask overlap {overlap:.2f}')
+     else:d['qa_flags'].append('No characters detected')
+     colors=[(255,80,70),(50,200,255),(100,240,100),(245,190,40),(220,90,240)];overlay=im.convert('RGBA')
+     for j,mask in enumerate(masks):
+      layer=Image.new('RGBA',im.size,colors[j%len(colors)]+(0,));layer.putalpha(Image.fromarray(mask.astype('uint8')*65));overlay=Image.alpha_composite(overlay,layer)
+     draw=ImageDraw.Draw(overlay)
      for j,c in enumerate(d['characters']):
-      best=int(scores[j].argmax());mask=all_masks[j,best].numpy().astype(bool);masks.append(mask)
-      dest=out/'masks'/f.stem/(c['id']+'.png');dest.parent.mkdir(parents=True,exist_ok=True)
-      Image.fromarray(mask.astype('uint8')*255).save(dest)
-      c.update(mask=dest.relative_to(out).as_posix(),sam_predicted_iou=float(scores[j,best]),mask_area_fraction=float(mask.mean()))
-      if c['sam_predicted_iou']<.75:d['qa_flags'].append(c['id']+': low SAM score')
-      if mask.mean()<.005:d['qa_flags'].append(c['id']+': very small mask')
-     for j in range(len(masks)):
-      for k in range(j):
-       overlap=np.logical_and(masks[j],masks[k]).sum()/max(1,min(masks[j].sum(),masks[k].sum()))
-       if overlap>.25:d['qa_flags'].append(f'person_{k+1}/person_{j+1}: mask overlap {overlap:.2f}')
-    else:d['qa_flags'].append('No characters detected')
-    colors=[(255,80,70),(50,200,255),(100,240,100),(245,190,40),(220,90,240)];overlay=im.convert('RGBA')
-    for j,mask in enumerate(masks):
-     layer=Image.new('RGBA',im.size,colors[j%len(colors)]+(0,));layer.putalpha(Image.fromarray(mask.astype('uint8')*65));overlay=Image.alpha_composite(overlay,layer)
-    draw=ImageDraw.Draw(overlay)
-    for j,c in enumerate(d['characters']):
-     box=c['bbox_xyxy_pixels'];draw.rectangle(box,outline=colors[j%len(colors)],width=max(2,im.width//350));draw.text((box[0]+3,box[1]+3),c['id'],fill='white',stroke_width=2,stroke_fill='black')
-    overlay.thumbnail((1200,1200));overlay.convert('RGB').save(out/'previews'/(f.stem+'.jpg'),quality=88)
-    d.update(segmentation_model=repos['sam'],segmentation_revision=revisions['sam'],segmentation_complete=True)
-    print(f'MASK {i}/{len(valid)} {f.name} flags={len(d["qa_flags"])}',flush=True)
-   except Exception as e:failed(f,'sam',e)
-   store(f)
-  del model,processor,inputs,pred,all_masks,scores;release_memory(device)
+      box=c['bbox_xyxy_pixels'];draw.rectangle(box,outline=colors[j%len(colors)],width=max(2,im.width//350));draw.text((box[0]+3,box[1]+3),c['id'],fill='white',stroke_width=2,stroke_fill='black')
+     overlay.thumbnail((1200,1200));overlay.convert('RGB').save(out/'previews'/(f.stem+'.jpg'),quality=88)
+     d.update(segmentation_model=repos['sam'],segmentation_revision=revisions['sam'],segmentation_complete=True)
+     print(f'MASK {i}/{len(grounded)} {f.name} flags={len(d["qa_flags"])}',flush=True)
+    except Exception as e:failed(f,'sam',e)
+    store(f)
+   del model,processor,inputs,pred,all_masks,scores;release_memory(device)
  if args.stage!='regions':
   path=model_path(args.models,'caption',args.profile);processor=AutoProcessor.from_pretrained(path,local_files_only=True)
   started=time.perf_counter()
@@ -179,7 +185,7 @@ def run_models(out,files,records,args,prompts):
     elapsed=time.perf_counter()-started
     if not caption.strip():raise ValueError('Empty caption')
     generated=ids[0,inputs['input_ids'].shape[1]:].tolist()
-    if caption_hit_limit(generated,args.caption_tokens,model.generation_config.eos_token_id):
+    if generation_hit_limit(generated,args.caption_tokens,model.generation_config.eos_token_id):
      records[f.name]['raw_caption']=caption
      raise ValueError('Caption reached token limit without EOS; raw text retained in metadata, excluded from export. Increase --caption-tokens or shorten the prompt.')
     dest=out/'captions'/(f.stem+'.txt');dest.write_bytes(caption.encode('utf-8'))
