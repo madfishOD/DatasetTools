@@ -212,7 +212,8 @@ def sync_edits(root, records, write=True):
 
 def fingerprints(record, args, prompts):
     from engine import model_specs
-    repos, revisions = model_specs(args.profile)
+    from model_catalog import selections
+    repos, revisions = model_specs(args.profile, selections(args))
     base = {'version': 1, 'image': record['image_sha256']}
     region = digest({**base, 'repo': repos['grounding'], 'revision': revisions['grounding'],
                      'prompt': prompts['regions'], 'tokens': args.region_tokens, 'dtype': args.dtype})
@@ -309,10 +310,11 @@ def export_snapshot(root, project, records, args):
         project['latest_export'] = None
         save(root / 'project.json', project)
         return {'accepted_pairs': 0, 'reason': 'No approved complete captions; use --approve-all after review.'}
+    import training_advice
     settings = {key: getattr(args, key) for key in ('family', 'base_model', 'resolution', 'rank', 'learning_rate',
                                                   'epochs', 'target_steps', 'no_training_config')}
     key = digest({'samples': [(r['sample_id'], r['image_sha256'], r['caption_sha256']) for r in included],
-                  'settings': settings, 'path': None if args.no_training_config else str(root.resolve()), 'version': 1})
+                  'settings': settings, 'advice': training_advice.context(args), 'advice_rules': training_advice.RULES_VERSION, 'path': None if args.no_training_config else str(root.resolve()), 'version': 1})
     exports = root / 'exports'
     exports.mkdir(exist_ok=True)
     # Recover an export committed just before a crash that prevented updating the latest pointer.
@@ -343,7 +345,8 @@ def export_snapshot(root, project, records, args):
     for record, image in zip(included, files):
         if sha(image) != record['image_sha256']:
             raise ValueError('Image changed during export')
-    save(staging / 'dataset_manifest.json', {'schema_version': VERSION,
+    advice_metadata = training_advice.write(root, staging, included, args)
+    save(staging / 'dataset_manifest.json', {'schema_version': VERSION, 'training_advice': advice_metadata,
          'samples': [{'source_id': r['source_id'], 'sample_id': r['sample_id'], 'source_file': r['source_file'],
                       'image': ('dataset' if args.no_training_config else 'onetrainer') + '/data/' + r['file'],
                       'caption': ('dataset' if args.no_training_config else 'onetrainer') + '/data/' + Path(r['file']).stem + '.txt',

@@ -86,7 +86,8 @@ class GuiTests(unittest.TestCase):
 
     def setUp(self):
         EditorStorageTests.setUp(self)
-        self.window = Window(self.root, previews=False)
+        with patch('gui.credentials.load_token', return_value=('', '')):
+            self.window = Window(self.root, previews=False)
         self.window.settings = type('NoSettings', (), {'setValue': lambda *args: None})()
         self.addCleanup(self.window.close)
 
@@ -123,6 +124,31 @@ class GuiTests(unittest.TestCase):
         self.assertTrue(self.window.run_button.isEnabled())
         self.assertIn('crashed', self.window.status.text())
         self.assertTrue(self.window.save(True))
+
+    def test_session_token_environment_and_clear_preserve_existing_auth(self):
+        with patch.dict(os.environ, {'HF_TOKEN':'hf_existingFixture', 'HF_HUB_DISABLE_IMPLICIT_TOKEN':'1'}, clear=True):
+            self.window.hf_token = 'hf_sessionFixture'
+            environment = self.window.worker_environment()
+            self.assertEqual(environment.value('HF_TOKEN'), 'hf_sessionFixture')
+            self.assertFalse(environment.contains('HF_HUB_DISABLE_IMPLICIT_TOKEN'))
+            self.assertEqual(os.environ['HF_TOKEN'], 'hf_existingFixture')
+            self.window.hf_token = ''
+            environment = self.window.worker_environment()
+            self.assertEqual(environment.value('HF_TOKEN'), 'hf_existingFixture')
+            self.assertEqual(environment.value('HF_HUB_DISABLE_IMPLICIT_TOKEN'), '1')
+
+    def test_token_reaches_worker_but_not_log_or_project(self):
+        self.window.hf_token = 'hf_sessionFixture'
+        self.window.set_busy(True)
+        self.window.process.setProcessEnvironment(self.window.worker_environment())
+        self.window.process.start(sys.executable, ['-c',
+            "import os; print(os.environ['HF_TOKEN']); print('authenticated environment received')"])
+        self.wait_worker()
+        self.assertIn('authenticated environment received', self.window.log.toPlainText())
+        self.assertIn('[REDACTED]', self.window.log.toPlainText())
+        self.assertNotIn('hf_sessionFixture', self.window.log.toPlainText())
+        for path in self.root.rglob('*'):
+            if path.is_file(): self.assertNotIn(b'hf_sessionFixture', path.read_bytes())
 
     def test_unsaved_cancel_keeps_current_selection(self):
         self.window.editor.setPlainText('Unsaved')

@@ -13,14 +13,20 @@ COMPACT_REVISIONS = {'caption': '89644892e4d85e24eaac8bacfd4f463576704203',
                      'grounding': '89644892e4d85e24eaac8bacfd4f463576704203',
                      'sam': 'de431c4043854a71d8101e17995dfe596bf101a5'}
 
-def model_specs(profile):
- return (COMPACT_REPOS, COMPACT_REVISIONS) if profile == 'compact' else (REPOS, REVISIONS)
+from model_catalog import CATALOG, selected, selections
 
-def model_path(cache,key,profile):
- repos,revisions=model_specs(profile)
- path=cache/repos[key].split('/')[-1]
- # Preserve existing Quality caches; new Compact caches are revision-specific.
- return path/revisions[key] if profile=='compact' else path
+
+def model_specs(profile, overrides=None):
+ names = selected(profile, overrides)
+ return ({key:CATALOG[name]['repo'] for key,name in names.items()},
+         {key:CATALOG[name]['revision'] for key,name in names.items()})
+
+
+def model_path(cache,key,profile,overrides=None):
+ names=selected(profile,overrides);spec=CATALOG[names[key]]
+ path=cache/spec['repo'].split('/')[-1]
+ # Reuse the pinned legacy Quality cache; Compact variants use revision directories.
+ return path/spec['revision'] if names[key] in ('qwen3-vl-2b','sam2.1-tiny') else path
 
 def generation_hit_limit(generated,limit,eos_token_id):
  eos=eos_token_id if isinstance(eos_token_id,(list,tuple)) else [eos_token_id]
@@ -55,12 +61,12 @@ def model_complete(path):
   except (ValueError,KeyError):return False
  return (path/'model.safetensors').is_file() and (path/'model.safetensors').stat().st_size>0
 
-def ensure_models(cache,stage,check=False,profile='quality',required_keys=None):
- repos,revisions=model_specs(profile)
+def ensure_models(cache,stage,check=False,profile='quality',required_keys=None,overrides=None):
+ repos,revisions=model_specs(profile,overrides)
  required=required_keys if required_keys is not None else (['caption'] if stage=='captions' else ['grounding','sam'] if stage=='regions' else list(REPOS))
  missing=[]
  for key in required:
-  repo=repos[key];path=model_path(cache,key,profile)
+  repo=repos[key];path=model_path(cache,key,profile,overrides)
   # Marker indicates tokenizer/processor assets were included, not just model weights.
   complete=model_complete(path) and any(path.glob('*processor*.json')) and (key=='sam' or (path/'tokenizer.json').is_file())
   if not complete:
@@ -79,7 +85,9 @@ def run_models(out,files,records,args,prompts,work=None,checkpoint_fn=None):
  from transformers import AutoProcessor,LlavaForConditionalGeneration,Qwen3VLForConditionalGeneration,Sam2Processor,Sam2Model
  device,precision=resolve_device(args.device,args.dtype)
  dtype=getattr(torch,precision)
- repos,revisions=model_specs(args.profile)
+ overrides=selections(args)
+ repos,revisions=model_specs(args.profile,overrides)
+ caption_backend=CATALOG[selected(args.profile,overrides)['caption']]['backend']
  print(f'DEVICE: {device}; dtype={precision}; profile={args.profile}',flush=True)
  def load_image(f):
   with Image.open(f) as source:
@@ -105,7 +113,7 @@ def run_models(out,files,records,args,prompts,work=None,checkpoint_fn=None):
   records[f.name]['qa_flags'].append(stage+' failed: '+str(e));save(out/'errors'/(f.stem+'_'+stage+'.json'),{'error':str(e)})
  def store(f):save(out/'regions'/(f.stem+'.json'),records[f.name])
  if jobs['grounding']:
-  path=model_path(args.models,'grounding',args.profile)
+  path=model_path(args.models,'grounding',args.profile,overrides)
   processor=AutoProcessor.from_pretrained(path,local_files_only=True)
   model=Qwen3VLForConditionalGeneration.from_pretrained(path,local_files_only=True,dtype=dtype,device_map={'':device},attn_implementation='sdpa').eval()
   inputs=ids=None
@@ -134,7 +142,7 @@ def run_models(out,files,records,args,prompts,work=None,checkpoint_fn=None):
  grounded=[f for f in jobs['sam'] if records[f.name].get('grounding_complete')]
  if jobs['sam'] and not grounded:print('SKIP SAM: no successful grounding results',flush=True)
  if grounded:
-  path=model_path(args.models,'sam',args.profile)
+  path=model_path(args.models,'sam',args.profile,overrides)
   processor=Sam2Processor.from_pretrained(path,local_files_only=True)
   model=Sam2Model.from_pretrained(path,local_files_only=True).to(device).eval()
   inputs=pred=all_masks=scores=None
@@ -173,9 +181,9 @@ def run_models(out,files,records,args,prompts,work=None,checkpoint_fn=None):
    store(f)
   del model,processor,inputs,pred,all_masks,scores;release_memory(device)
  if jobs['caption']:
-  path=model_path(args.models,'caption',args.profile);processor=AutoProcessor.from_pretrained(path,local_files_only=True)
+  path=model_path(args.models,'caption',args.profile,overrides);processor=AutoProcessor.from_pretrained(path,local_files_only=True)
   started=time.perf_counter()
-  model_class=Qwen3VLForConditionalGeneration if args.profile=='compact' else LlavaForConditionalGeneration
+  model_class=Qwen3VLForConditionalGeneration if caption_backend=='qwen' else LlavaForConditionalGeneration
   model=model_class.from_pretrained(path,local_files_only=True,dtype=dtype,device_map={'':device},attn_implementation='sdpa').eval()
   synchronize(device);load_seconds=time.perf_counter()-started
   inputs=ids=None
@@ -185,7 +193,7 @@ def run_models(out,files,records,args,prompts,work=None,checkpoint_fn=None):
     started=time.perf_counter()
     im=load_image(f)
     if args.max_image_side:im.thumbnail((args.max_image_side,args.max_image_side))
-    if args.profile=='compact':
+    if caption_backend=='qwen':
      conversation=[{'role':'system','content':[{'type':'text','text':prompts['system']}]},
                    {'role':'user','content':[{'type':'image','image':im},{'type':'text','text':prompts['instruction']}]}]
      inputs=processor.apply_chat_template(conversation,tokenize=True,add_generation_prompt=True,return_dict=True,return_tensors='pt').to(device)

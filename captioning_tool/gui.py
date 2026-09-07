@@ -3,19 +3,23 @@ import argparse
 import codecs
 import hashlib
 import json
+import re
 from pathlib import Path
 import sys
 import tempfile
 
-from PySide6.QtCore import QProcess, QSettings, Qt, QUrl, QSize
+from PySide6.QtCore import QProcess, QProcessEnvironment, QSettings, Qt, QUrl, QSize
 from PySide6.QtGui import QDesktopServices, QImageReader, QPixmap, QKeySequence
 from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QHBoxLayout,
     QLabel, QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPlainTextEdit,
     QProgressBar, QPushButton, QSplitter, QVBoxLayout, QWidget, QDialog,
-    QDialogButtonBox, QLineEdit)
+    QDialogButtonBox, QLineEdit, QCheckBox)
 
 import project as projects
-from training_export import atomic_write
+from training_export import atomic_write, save
+from settings_dialog import SettingsDialog
+import training_advice
+import credentials
 
 HERE = Path(__file__).resolve().parent
 
@@ -83,6 +87,9 @@ class Window(QMainWindow):
         self.previews = previews
         self.busy = False
         self.stop_dir = None
+        self.hf_token, self.credential_notice = credentials.load_token()
+        self.token_saved = bool(self.hf_token)
+        self.worker_token = ''
         self.completed = 0
         self.settings = QSettings('DatasetTools', 'Captioning')
         self.process = QProcess(self)
@@ -100,6 +107,9 @@ class Window(QMainWindow):
         self.open_button = self.button(bar, 'Open project…', self.choose_project)
         self.recent_button = self.button(bar, 'Recent project', self.open_recent)
         self.refresh_button = self.button(bar, 'Refresh', self.refresh_clicked)
+        self.settings_button = self.button(bar, 'Project settings…', self.edit_settings)
+        self.advice_button = self.button(bar, 'Training advice…', self.preview_advice)
+        self.auth_button = self.button(bar, 'Hugging Face token ✓' if self.hf_token else 'Hugging Face token…', self.edit_hf_token)
         self.path_label = QLabel('Open a project or import an image folder.')
         self.path_label.setWordWrap(True); layout.addWidget(self.path_label)
         controls = QHBoxLayout(); layout.addLayout(controls)
@@ -137,6 +147,8 @@ class Window(QMainWindow):
         self.set_busy(False)
         if root:
             self.open_project(root)
+        if self.credential_notice:
+            self.status.setText(self.credential_notice)
 
     def button(self, layout, title, handler):
         button = QPushButton(title); button.clicked.connect(handler); layout.addWidget(button)
@@ -162,7 +174,7 @@ class Window(QMainWindow):
         self.busy = busy
         for button in (self.new_button, self.open_button, self.recent_button):
             button.setEnabled(not busy)
-        for button in (self.refresh_button, self.run_button, self.export_button, self.folder_button):
+        for button in (self.refresh_button, self.run_button, self.export_button, self.folder_button, self.settings_button, self.advice_button):
             button.setEnabled(not busy and self.root is not None)
         for button in (self.save_button, self.approve_button, self.unapprove_button, self.regenerate_button):
             button.setEnabled(not busy and self.selected is not None)
@@ -293,6 +305,43 @@ class Window(QMainWindow):
     def export(self):
         self.run(['--export-only', '--no-training-config'])
 
+    def edit_settings(self):
+        if not self.root or not self.can_leave(): return
+        try:
+            project = projects.load_project(self.root)
+            dialog = SettingsDialog(project['options'], self)
+            if dialog.exec() != QDialog.DialogCode.Accepted: return
+            with projects.project_lock(self.root):
+                current = projects.load_project(self.root)
+                if current['options'] != project['options']:
+                    raise ValueError('Project settings changed in another process. Reopen settings before saving.')
+                current['options'].update(dialog.values())
+                current['latest_export'] = None
+                save(self.root / 'project.json', current)
+            self.open_project(self.root)
+            self.status.setText('Settings saved. Approved captions are preserved. Use Run / Resume to apply model changes, or export to update advice.')
+        except Exception as error: self.error(error)
+
+    def preview_advice(self):
+        if not self.root or not self.can_leave(): return
+        try:
+            from auto_captioning_tool import parser
+            project = projects.load_project(self.root)
+            records = projects.load_records(self.root, project)
+            projects.sync_edits(self.root, records, write=False)
+            approved = [r for r in records.values() if r.get('review_status') == 'approved' and projects.artifact_valid(self.root, r, 'caption')]
+            if not approved:
+                self.status.setText('Approve at least one complete caption before previewing export advice.'); return
+            args = parser().parse_args([])
+            for key,value in project['options'].items(): setattr(args,key,value)
+            text, _ = training_advice.render(self.root, approved, args)
+            dialog = QDialog(self); dialog.setWindowTitle('Training advice — approved dataset export preview'); dialog.resize(820,650)
+            layout = QVBoxLayout(dialog)
+            viewer = QPlainTextEdit(); viewer.setReadOnly(True); viewer.setPlainText(text); layout.addWidget(viewer)
+            buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close); buttons.rejected.connect(dialog.reject); layout.addWidget(buttons)
+            dialog.exec()
+        except Exception as error: self.error(error)
+
     def open_export(self):
         try:
             project = projects.load_project(self.root)
@@ -302,6 +351,50 @@ class Window(QMainWindow):
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(projects.local(self.root, relative))))
         except Exception as error: self.error(error)
 
+    def edit_hf_token(self):
+        dialog = QDialog(self); dialog.setWindowTitle('Hugging Face authentication')
+        dialog.setMinimumWidth(560)
+        layout = QVBoxLayout(dialog)
+        note = QLabel('Enter a Hugging Face read token for model downloads. Remember it in macOS Keychain or Windows Credential Manager to reuse it after restarting. It is never saved in project files or exports. Changes apply to the next worker run, not a download already in progress.')
+        note.setWordWrap(True); layout.addWidget(note)
+        link = QLabel('<a href="https://huggingface.co/settings/tokens">Create or manage a Hugging Face token</a>')
+        link.setOpenExternalLinks(True); layout.addWidget(link)
+        field = QLineEdit(self.hf_token); field.setEchoMode(QLineEdit.EchoMode.Password)
+        field.setPlaceholderText('hf_…'); field.setAccessibleName('Hugging Face access token'); layout.addWidget(field)
+        remember = QCheckBox('Remember token in system credential storage'); remember.setChecked(True); layout.addWidget(remember)
+        hint = QLabel('Leave empty to remove the app token from system storage and use existing HF_TOKEN / Hugging Face login settings. A token is optional for public models. Token validity is checked by Hugging Face during download.')
+        hint.setWordWrap(True); layout.addWidget(hint)
+        error = QLabel(self.credential_notice); error.setWordWrap(True); layout.addWidget(error)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        def apply():
+            token = field.text().strip()
+            if token and not re.fullmatch(r'hf_[A-Za-z0-9]+', token):
+                error.setText('Enter a Hugging Face token beginning with hf_ and containing no spaces.'); return
+            try:
+                if remember.isChecked() or self.token_saved or not token:
+                    credentials.save_token(token if remember.isChecked() else '')
+            except RuntimeError as issue:
+                error.setText(str(issue)); return
+            self.hf_token = token
+            self.token_saved = bool(token and remember.isChecked())
+            self.credential_notice = ''
+            field.clear()
+            self.auth_button.setText('Hugging Face token ✓' if token else 'Hugging Face token…')
+            self.status.setText(('Token saved in system credential storage; applies to the next worker run.' if self.token_saved else 'Token set for this session only; applies to the next worker run.') if token else 'App token removed. Existing Hugging Face authentication settings will be used.')
+            dialog.accept()
+        buttons.accepted.connect(apply); buttons.rejected.connect(dialog.reject); layout.addWidget(buttons)
+        dialog.exec()
+        field.clear()
+
+    def worker_environment(self):
+        environment = QProcessEnvironment.systemEnvironment()
+        if self.hf_token:
+            environment.insert('HF_TOKEN', self.hf_token)
+            # The user explicitly opted into authentication for this worker.
+            environment.remove('HF_HUB_DISABLE_IMPLICIT_TOKEN')
+        self.worker_token = environment.value('HF_TOKEN')
+        return environment
+
     def start_worker(self, arguments):
         if self.busy: return
         self.stop_dir = tempfile.TemporaryDirectory(prefix='datasettools-worker-')
@@ -310,6 +403,7 @@ class Window(QMainWindow):
         self.last_summary = {}
         self.log.clear(); self.progress.setRange(0, 0); self.status.setText('Preparing…')
         self.set_busy(True)
+        self.process.setProcessEnvironment(self.worker_environment())
         self.process.start(sys.executable, ['-u', str(HERE / 'auto_captioning_tool.py'),
             *arguments, '--events', '--stop-file', str(self.stop_path)])
 
@@ -326,6 +420,9 @@ class Window(QMainWindow):
             self.consume_line(line)
 
     def consume_line(self, line):
+        if self.worker_token:
+            line = line.replace(self.worker_token, '[REDACTED]')
+        line = re.sub(r'hf_[A-Za-z0-9]+', '[REDACTED]', line)
         if line.startswith('DATASET_EVENT '):
             try:
                 event = json.loads(line[len('DATASET_EVENT '):])

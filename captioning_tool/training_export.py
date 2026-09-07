@@ -43,6 +43,12 @@ def training_plan(count,family,target_steps=None,epochs=None):
 
 def export_training(out,files,args,path_root=None):
  dataset_only=getattr(args,'no_training_config',False)
+ if not dataset_only:
+  family=getattr(args,'training_family','unknown')
+  if family not in ('unknown',args.family): raise ValueError('Training family conflicts with the requested OneTrainer config family')
+  if getattr(args,'training_method','unknown')=='full': raise ValueError('OneTrainer export currently generates LoRA only; use dataset-only for full fine-tuning')
+  trainer=getattr(args,'trainer','').strip().lower()
+  if trainer and trainer!='onetrainer': raise ValueError('Use dataset-only export for another trainer')
  root=out/('dataset' if dataset_only else 'onetrainer');root.mkdir(exist_ok=False);data=root/'data';data.mkdir()
  config_root=(path_root or out)/root.name
  included=[];excluded=[]

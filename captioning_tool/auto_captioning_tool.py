@@ -7,6 +7,7 @@ from training_export import PROFILES,rebase,save,sha,atomic_write
 import project as projects
 from engine import ensure_models,run_models
 from devices import resolve_device
+from model_catalog import CATALOG, selections
 EXTENSIONS={'.png','.jpg','.jpeg','.webp','.bmp'}
 
 def discover(folder,recursive=True):
@@ -57,6 +58,15 @@ def parser():
  p.add_argument('--base-model',default='',help='Training model repository ID or local path')
  p.add_argument('--stage',choices=['all','captions','regions'],default='all')
  p.add_argument('--profile',choices=['quality','compact'],default='quality')
+ for stage in ('caption', 'grounding', 'sam'):
+  p.add_argument('--'+stage+'-model', choices=[key for key,spec in CATALOG.items() if stage in spec['stages']], help='Override this stage model from the profile')
+ p.add_argument('--training-goal',choices=['unspecified','style','character','concept','pose','custom'],default='unspecified')
+ p.add_argument('--goal-description',default='')
+ p.add_argument('--training-family',choices=['unknown','sdxl','flux','qwen','wan','other'],default='unknown')
+ p.add_argument('--training-method',choices=['unknown','lora','full'],default='unknown')
+ p.add_argument('--trainer',default='')
+ p.add_argument('--training-hardware',default='')
+ p.add_argument('--trigger-word',default='')
  p.add_argument('--device',choices=['auto','cuda','mps','cpu'],default='auto')
  p.add_argument('--dtype',choices=['auto','float16','bfloat16','float32'],default='auto')
  p.add_argument('--max-image-side',type=positive,default=None,help='Caption input longest side (Compact default: 768); original files are unchanged')
@@ -73,7 +83,8 @@ def parser():
 
 PERSISTED_OPTIONS = ('stage','profile','device','dtype','max_image_side','caption_tokens','region_tokens',
                      'family','base_model','resolution','rank','learning_rate','epochs','target_steps',
-                     'no_training_config','models','no_recursive')
+                     'no_training_config','models','no_recursive','caption_model','grounding_model','sam_model',
+                     'training_goal','goal_description','training_family','training_method','trainer','training_hardware','trigger_word')
 PROMPT_OPTIONS = {'instruction':'prompt','system':'system_prompt','regions':'region_prompt'}
 
 
@@ -154,7 +165,7 @@ def main(argv=None):
     if args.profile == 'compact' and args.max_image_side is None:
         args.max_image_side = 768
     if args.download_models:
-        missing = ensure_models(args.models,args.stage,check=args.check,profile=args.profile)
+        missing = ensure_models(args.models,args.stage,check=args.check,profile=args.profile,overrides=selections(args))
         print(json.dumps({'missing_models':missing,'check_only':args.check})); return 0
     if not 0 < args.learning_rate < 1:
         raise ValueError('Learning rate must be between 0 and 1')
@@ -215,7 +226,7 @@ def main(argv=None):
             if any(pending.values()) and not args.import_only and not args.export_only:
                 device, precision = resolve_device(args.device,args.dtype)
                 print(f'COMPUTE: {device}; dtype={precision}; profile={args.profile}',flush=True)
-                ensure_models(args.models,args.stage,profile=args.profile,required_keys=[key for key in work if work[key]])
+                ensure_models(args.models,args.stage,profile=args.profile,required_keys=[key for key in work if work[key]],overrides=selections(args))
                 files = list(dict.fromkeys(f for values in work.values() for f in values))
                 def checkpoint(image, stage, status, error=None):
                     if status == 'running':
