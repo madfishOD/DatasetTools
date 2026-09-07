@@ -34,7 +34,8 @@ def training_plan(count,family,target_steps=None,epochs=None):
    (['Very small dataset; high repetition can overfit. Review checkpoints and reduce epochs.'] if 0<count<20 else []))
 
 def export_training(out,files,args):
- root=out/'onetrainer';root.mkdir(exist_ok=False);data=root/'data';data.mkdir()
+ dataset_only=getattr(args,'no_training_config',False)
+ root=out/('dataset' if dataset_only else 'onetrainer');root.mkdir(exist_ok=False);data=root/'data';data.mkdir()
  included=[];excluded=[]
  for image in files:
   caption=out/'captions'/(image.stem+'.txt')
@@ -48,6 +49,7 @@ def export_training(out,files,args):
  plan.update(included=included,excluded=excluded,ready=False)
  model,base,res=PROFILES[args.family]
  if not included: plan['reason']='No accepted pairs. No train.json generated.'
+ elif dataset_only: plan['reason']='Dataset-only export requested. No trainer configuration generated.'
  elif model is None: plan['reason']='WAN is not supported by the checked OneTrainer version. Dataset only; no incompatible train.json generated.'
  else:
   defaults=json.loads((HERE/'templates/defaults.json').read_text(encoding='utf-8'))
@@ -75,14 +77,16 @@ def export_training(out,files,args):
   plan.update(ready=True,base_model=config['base_model_name'],resolution=config['resolution'],
    learning_rate=config['learning_rate'],lora_rank=config['lora_rank'])
  save(root/'training_plan.json',plan)
- (root/'README.txt').write_text(
+ (root/'README.txt').write_text((
+  'Dataset-only export: image/TXT pairs are in data/. Review the generated captions before training.\n'
+  'No training has been run or trainer configuration generated.\n' if dataset_only else
   'Load train.json in OneTrainer, review Concepts, model path and training_plan.json, then start manually.\n'
   'Repository IDs may need a download/login; local base models need all encoders and VAE.\n'
   'No training has been run. Presets are starting points, not a quality or VRAM guarantee.\n'
   'Paths are absolute. After moving this output, run --rebase-output NEW_FOLDER to update generated paths.\n'
   'Only accepted captions are exported, byte-for-byte. Source images are copied unchanged.\n'
   'Mask artifacts are for review, not training conditioning. Checkpoints save every epoch; allow disk space.\n'
-  +plan.get('reason','')+'\n',encoding='utf-8')
+  +plan.get('reason','')+'\n'),encoding='utf-8')
  return {k:plan[k] for k in ('ready','accepted_pairs','epochs','estimated_optimizer_steps')} | {'reason':plan.get('reason')}
 
 def rebase(out):

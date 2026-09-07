@@ -2,11 +2,47 @@
 import json,sys,tempfile,unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parent))
-from auto_captioning_tool import discover,identifiers
+from auto_captioning_tool import discover,identifiers,parser
 from training_export import export_training,training_plan,rebase
-from engine import parse_regions,model_complete
+from engine import parse_regions,model_complete,ensure_models,model_path,caption_hit_limit
+from devices import resolve_device
 class Checks(unittest.TestCase):
+ def test_device_selection_and_no_silent_cpu_fallback(self):
+  fake=SimpleNamespace(cuda=SimpleNamespace(is_available=lambda:False),
+                       backends=SimpleNamespace(mps=SimpleNamespace(is_available=lambda:True)))
+  with patch.dict(sys.modules,{'torch':fake}),patch.dict('os.environ',{'PYTORCH_ENABLE_MPS_FALLBACK':'0'}):
+   self.assertEqual(resolve_device(),('mps','float16'))
+   self.assertEqual(resolve_device('cpu'),('cpu','float32'))
+   with self.assertRaises(RuntimeError):resolve_device('cuda')
+   fake.backends.mps.is_available=lambda:False
+   with self.assertRaises(RuntimeError):resolve_device()
+ def test_truncated_caption_detection(self):
+  self.assertTrue(caption_hit_limit([10,11,12],3,[2,3]))
+  self.assertFalse(caption_hit_limit([10,11,2],3,[2,3]))
+  self.assertFalse(caption_hit_limit([10,2],3,2))
+ def test_default_prompts_exist(self):
+  args=parser().parse_args([])
+  for path in (args.prompt,args.system_prompt,args.region_prompt):
+   self.assertTrue(path.is_file());self.assertTrue(path.read_text().strip())
+ def test_compact_caption_cache_does_not_require_other_models(self):
+  with tempfile.TemporaryDirectory() as temp:
+   root=Path(temp);path=model_path(root,'caption','compact');path.mkdir(parents=True)
+   for name in ('config.json','preprocessor_config.json','tokenizer.json'):(path/name).write_text('{}')
+   (path/'model.safetensors').write_bytes(b'weights')
+   self.assertEqual(ensure_models(root,'captions',check=True,profile='compact'),[])
+   self.assertEqual(len(ensure_models(root,'regions',check=True,profile='compact')),1)
+ def test_dataset_only_export(self):
+  with tempfile.TemporaryDirectory() as temp:
+   out=Path(temp);(out/'captions').mkdir();image=out/'sample.jpg';image.write_bytes(b'original')
+   (out/'captions/sample.txt').write_bytes(b'Caption\n')
+   args=SimpleNamespace(family='qwen',target_steps=None,epochs=None,no_training_config=True)
+   result=export_training(out,[image],args)
+   self.assertEqual(result['accepted_pairs'],1)
+   self.assertEqual((out/'dataset/data/sample.jpg').read_bytes(),b'original')
+   self.assertFalse(list(out.rglob('train.json')))
+   self.assertFalse((out/'onetrainer').exists())
  def test_discovery_and_collisions(self):
   with tempfile.TemporaryDirectory() as temp:
    root=Path(temp);(root/'nested').mkdir()

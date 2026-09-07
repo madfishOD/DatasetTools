@@ -5,6 +5,7 @@ HERE=Path(__file__).resolve().parent
 sys.path.insert(0,str(HERE))
 from training_export import PROFILES,export_training,rebase,save,sha
 from engine import ensure_models,run_models
+from devices import resolve_device
 EXTENSIONS={'.png','.jpg','.jpeg','.webp','.bmp'}
 
 def discover(folder,recursive=True):
@@ -38,14 +39,19 @@ def positive(value):
 def parser():
  p=argparse.ArgumentParser(description=__doc__)
  p.add_argument('--input',type=Path);p.add_argument('--output',type=Path)
- p.add_argument('--prompt',type=Path,default=HERE/'prompts/instruction.txt')
- p.add_argument('--system-prompt',type=Path,default=HERE/'prompts/system.txt')
- p.add_argument('--region-prompt',type=Path,default=HERE/'prompts/regions.txt')
+ p.add_argument('--prompt',type=Path,default=HERE/'prompts/neutral/instruction.txt')
+ p.add_argument('--system-prompt',type=Path,default=HERE/'prompts/neutral/system.txt')
+ p.add_argument('--region-prompt',type=Path,default=HERE/'prompts/neutral/regions.txt')
  p.add_argument('--models',type=Path,default=HERE/'models',help='Captioning model cache; downloads missing models automatically')
  p.add_argument('--packages',type=Path,help='Optional existing Python package directory')
  p.add_argument('--family',choices=PROFILES,default='qwen',help='Training architecture, independent of captioning model')
  p.add_argument('--base-model',default='',help='Training model repository ID or local path')
  p.add_argument('--stage',choices=['all','captions','regions'],default='all')
+ p.add_argument('--profile',choices=['quality','compact'],default='quality')
+ p.add_argument('--device',choices=['auto','cuda','mps','cpu'],default='auto')
+ p.add_argument('--dtype',choices=['auto','float16','bfloat16','float32'],default='auto')
+ p.add_argument('--max-image-side',type=positive,default=None,help='Caption input longest side (Compact default: 768); original files are unchanged')
+ p.add_argument('--no-training-config',action='store_true',help='Export image/TXT pairs without OneTrainer training config')
  p.add_argument('--no-recursive',action='store_true',help='Only images directly in the input folder')
  p.add_argument('--target-steps',type=positive);p.add_argument('--epochs',type=positive)
  p.add_argument('--learning-rate',type=float,default=1e-4);p.add_argument('--rank',type=positive,default=16)
@@ -69,8 +75,9 @@ def main():
   if answer:args.base_model=answer
  if args.packages:sys.path.insert(0,str(args.packages.resolve()))
  args.models=args.models.resolve()
+ if args.profile=='compact' and args.max_image_side is None:args.max_image_side=768
  if args.download_models:
-  missing=ensure_models(args.models,args.stage,check=args.check);print(json.dumps({'missing_models':missing,'check_only':args.check}));return 0
+  missing=ensure_models(args.models,args.stage,check=args.check,profile=args.profile);print(json.dumps({'missing_models':missing,'check_only':args.check}));return 0
  if args.input is None:raise ValueError('--input is required (or use --interactive)')
  if not 0<args.learning_rate<1:raise ValueError('Learning rate must be between 0 and 1')
  args.input=args.input.resolve()
@@ -86,17 +93,15 @@ def main():
  originals=discover(args.input,not args.no_recursive)
  if not originals:raise ValueError('No supported images in input directory')
  names=identifiers(originals,args.input)
- missing=ensure_models(args.models,args.stage,check=True)
+ missing=ensure_models(args.models,args.stage,check=True,profile=args.profile)
  print(f'PREFLIGHT: {len(originals)} images; recursive={not args.no_recursive}; family={args.family}; stage={args.stage}',flush=True)
  print('OUTPUT: '+str(out),flush=True)
  if missing:print('Models to download: '+', '.join(missing),flush=True)
  if args.family=='wan':print('WAN: dataset export only; OneTrainer does not support this architecture.',flush=True)
+ args.device,args.dtype=resolve_device(args.device,args.dtype)
+ print(f'COMPUTE: {args.device}; dtype={args.dtype}; profile={args.profile}',flush=True)
  if args.check:return 0
- import torch
- if not torch.cuda.is_available():raise RuntimeError('CUDA GPU unavailable; install a compatible NVIDIA driver before downloading models.')
- if not torch.cuda.is_bf16_supported():raise RuntimeError('This BF16 profile needs a GPU with BF16 support.')
- print(f'Available GPU memory: {torch.cuda.mem_get_info()[0]/2**30:.1f} GiB; the BF16 profile typically needs a 24+ GB GPU.',flush=True)
- ensure_models(args.models,args.stage)
+ ensure_models(args.models,args.stage,profile=args.profile)
  out.mkdir(parents=True,exist_ok=True)
  for folder in ('images','captions','regions','errors','prompts','previews','grounding_raw'): (out/folder).mkdir()
  manifest=[];files=[];records={};run_error=None
