@@ -1,0 +1,7 @@
+venv/
+fiftyone_db/
+fiftyone-plugins/
+fiftyone_zoo_models/
+fiftyone_plugins/@voxel51/
+fiftyone_plugins/@madfish/
+my_plugins/
