@@ -1,4 +1,26 @@
+# Python environments and caches
 venv/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local runtime, models, and generated datasets
+/runtime/
+/models/
+/cache/
+/projects/
+/captioning_tool/runtime/
+/captioning_tool/models/
+/captioning_tool/outputs/
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# Existing FiftyOne local data and plugins
 fiftyone_db/
 fiftyone-plugins/
 fiftyone_zoo_models/
