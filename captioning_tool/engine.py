@@ -1,8 +1,9 @@
 """Sequential local captioning, box grounding and SAM 2 segmentation."""
-import json,re,time
+import json,re,time,hashlib
 from devices import resolve_device,release_memory,synchronize,memory_snapshot
 from pathlib import Path
-from training_export import save,sha
+from training_export import save,sha,atomic_write
+from io import BytesIO
 REPOS={'caption':'fancyfeast/llama-joycaption-beta-one-hf-llava',
  'grounding':'Qwen/Qwen3-VL-8B-Instruct','sam':'facebook/sam2.1-hiera-large'}
 REVISIONS={'caption':'ebf414ea497a020da0f82df3913e5b6cb8e9663a','grounding':'0c351dd01ed87e9c1b53cbc748cba10e6187ff3b','sam':'665f8e2ad61cf5f53d65644ff27c8ee525124610'}
@@ -54,9 +55,9 @@ def model_complete(path):
   except (ValueError,KeyError):return False
  return (path/'model.safetensors').is_file() and (path/'model.safetensors').stat().st_size>0
 
-def ensure_models(cache,stage,check=False,profile='quality'):
+def ensure_models(cache,stage,check=False,profile='quality',required_keys=None):
  repos,revisions=model_specs(profile)
- required=['caption'] if stage=='captions' else ['grounding','sam'] if stage=='regions' else list(REPOS)
+ required=required_keys if required_keys is not None else (['caption'] if stage=='captions' else ['grounding','sam'] if stage=='regions' else list(REPOS))
  missing=[]
  for key in required:
   repo=repos[key];path=model_path(cache,key,profile)
@@ -71,7 +72,7 @@ def ensure_models(cache,stage,check=False,profile='quality'):
     if not model_complete(path):raise RuntimeError('Incomplete download: '+repo)
  return missing
 
-def run_models(out,files,records,args,prompts):
+def run_models(out,files,records,args,prompts,work=None,checkpoint_fn=None):
  import torch
  import numpy as np
  from PIL import Image,ImageOps,ImageDraw
@@ -84,30 +85,40 @@ def run_models(out,files,records,args,prompts):
   with Image.open(f) as source:
    if getattr(source,'n_frames',1)>1:raise ValueError('Multi-frame image is unsupported; export still frames first')
    return ImageOps.exif_transpose(source).convert('RGB')
+ def mark(f,stage,status,error=None):
+  if checkpoint_fn:checkpoint_fn(f,stage,status,error)
+ def save_image(im,path,format,**options):
+  buffer=BytesIO();im.save(buffer,format=format,**options);atomic_write(path,buffer.getvalue())
  valid=[]
  for f in files:
   try:
    im=load_image(f);records[f.name].update(width=im.width,height=im.height);valid.append(f)
   except Exception as e:
    records[f.name]['qa_flags'].append(str(e));save(out/'errors'/(f.stem+'_image.json'),{'error':str(e)})
+   for stage in ('grounding','sam','caption'):
+    if work and f in work[stage]:mark(f,stage,'failed',e)
+ jobs=work or {'grounding':valid if args.stage!='captions' else [],'sam':valid if args.stage!='captions' else [],'caption':valid if args.stage!='regions' else []}
+ jobs={stage:[f for f in items if f in valid] for stage,items in jobs.items()}
  def failed(f,stage,e):
   print(f'ERROR {stage} {f.name}: {e}',flush=True)
+  mark(f,'grounding' if stage=='regions' else stage,'failed',e)
   records[f.name]['qa_flags'].append(stage+' failed: '+str(e));save(out/'errors'/(f.stem+'_'+stage+'.json'),{'error':str(e)})
  def store(f):save(out/'regions'/(f.stem+'.json'),records[f.name])
- if args.stage!='captions':
+ if jobs['grounding']:
   path=model_path(args.models,'grounding',args.profile)
   processor=AutoProcessor.from_pretrained(path,local_files_only=True)
   model=Qwen3VLForConditionalGeneration.from_pretrained(path,local_files_only=True,dtype=dtype,device_map={'':device},attn_implementation='sdpa').eval()
   inputs=ids=None
-  for i,f in enumerate(valid,1):
+  for i,f in enumerate(jobs['grounding'],1):
    d=records[f.name]
+   mark(f,'grounding','running')
    try:
     im=load_image(f);im.thumbnail((1024,1024))
     messages=[{'role':'user','content':[{'type':'image','image':im},{'type':'text','text':prompts['regions']}]}]
     inputs=processor.apply_chat_template(messages,tokenize=True,add_generation_prompt=True,return_dict=True,return_tensors='pt').to(device)
     with torch.inference_mode():ids=model.generate(**inputs,max_new_tokens=args.region_tokens,do_sample=False)
     raw=processor.decode(ids[0,inputs['input_ids'].shape[1]:],skip_special_tokens=True)
-    (out/'grounding_raw'/(f.stem+'.txt')).write_bytes(raw.encode('utf-8'))
+    atomic_write(out/'grounding_raw'/(f.stem+'.txt'),raw.encode('utf-8'))
     generated=ids[0,inputs['input_ids'].shape[1]:].tolist()
     if generation_hit_limit(generated,args.region_tokens,model.generation_config.eos_token_id):
      raise ValueError('Region JSON reached token limit without EOS; raw response retained. Increase --region-tokens for this image.')
@@ -115,57 +126,61 @@ def run_models(out,files,records,args,prompts):
     for j,c in enumerate(chars,1):
      b=c['bbox'];c['id']=f'person_{j}';c['bbox_xyxy_pixels']=[round(b[k]*d['width' if k%2==0 else 'height']/1000) for k in range(4)]
     d.update(characters=chars,grounding_complete=True,grounding_model=repos['grounding'],grounding_revision=revisions['grounding'])
-    print(f'REGIONS {i}/{len(valid)} {f.name}: {len(chars)}',flush=True)
+    mark(f,'grounding','complete')
+    print(f'REGIONS {i}/{len(jobs["grounding"])} {f.name}: {len(chars)}',flush=True)
    except Exception as e:failed(f,'regions',e)
    store(f)
   del model,processor,inputs,ids;release_memory(device)
-  grounded=[f for f in valid if records[f.name].get('grounding_complete')]
-  if not grounded:print('SKIP SAM: no successful grounding results',flush=True)
-  if grounded:
-   path=model_path(args.models,'sam',args.profile)
-   processor=Sam2Processor.from_pretrained(path,local_files_only=True)
-   model=Sam2Model.from_pretrained(path,local_files_only=True).to(device).eval()
-   inputs=pred=all_masks=scores=None
-   for i,f in enumerate(grounded,1):
-    d=records[f.name]
-    try:
-     im=load_image(f);masks=[];boxes=[c['bbox_xyxy_pixels'] for c in d['characters']]
-     if boxes:
-      inputs=processor(images=im,input_boxes=[boxes],return_tensors='pt').to(device)
-      with torch.inference_mode():pred=model(**inputs,multimask_output=True)
-      all_masks=processor.post_process_masks(pred.pred_masks.cpu(),inputs['original_sizes'])[0];scores=pred.iou_scores[0].detach().cpu()
-      for j,c in enumerate(d['characters']):
-       best=int(scores[j].argmax());mask=all_masks[j,best].numpy().astype(bool);masks.append(mask)
-       dest=out/'masks'/f.stem/(c['id']+'.png');dest.parent.mkdir(parents=True,exist_ok=True)
-       Image.fromarray(mask.astype('uint8')*255).save(dest)
-       c.update(mask=dest.relative_to(out).as_posix(),sam_predicted_iou=float(scores[j,best]),mask_area_fraction=float(mask.mean()))
-       if c['sam_predicted_iou']<.75:d['qa_flags'].append(c['id']+': low SAM score')
-       if mask.mean()<.005:d['qa_flags'].append(c['id']+': very small mask')
-      for j in range(len(masks)):
-       for k in range(j):
-        overlap=np.logical_and(masks[j],masks[k]).sum()/max(1,min(masks[j].sum(),masks[k].sum()))
-        if overlap>.25:d['qa_flags'].append(f'person_{k+1}/person_{j+1}: mask overlap {overlap:.2f}')
-     else:d['qa_flags'].append('No characters detected')
-     colors=[(255,80,70),(50,200,255),(100,240,100),(245,190,40),(220,90,240)];overlay=im.convert('RGBA')
-     for j,mask in enumerate(masks):
-      layer=Image.new('RGBA',im.size,colors[j%len(colors)]+(0,));layer.putalpha(Image.fromarray(mask.astype('uint8')*65));overlay=Image.alpha_composite(overlay,layer)
-     draw=ImageDraw.Draw(overlay)
+ grounded=[f for f in jobs['sam'] if records[f.name].get('grounding_complete')]
+ if jobs['sam'] and not grounded:print('SKIP SAM: no successful grounding results',flush=True)
+ if grounded:
+  path=model_path(args.models,'sam',args.profile)
+  processor=Sam2Processor.from_pretrained(path,local_files_only=True)
+  model=Sam2Model.from_pretrained(path,local_files_only=True).to(device).eval()
+  inputs=pred=all_masks=scores=None
+  for i,f in enumerate(grounded,1):
+   d=records[f.name]
+   mark(f,'sam','running')
+   try:
+    im=load_image(f);masks=[];boxes=[c['bbox_xyxy_pixels'] for c in d['characters']]
+    if boxes:
+     inputs=processor(images=im,input_boxes=[boxes],return_tensors='pt').to(device)
+     with torch.inference_mode():pred=model(**inputs,multimask_output=True)
+     all_masks=processor.post_process_masks(pred.pred_masks.cpu(),inputs['original_sizes'])[0];scores=pred.iou_scores[0].detach().cpu()
      for j,c in enumerate(d['characters']):
-      box=c['bbox_xyxy_pixels'];draw.rectangle(box,outline=colors[j%len(colors)],width=max(2,im.width//350));draw.text((box[0]+3,box[1]+3),c['id'],fill='white',stroke_width=2,stroke_fill='black')
-     overlay.thumbnail((1200,1200));overlay.convert('RGB').save(out/'previews'/(f.stem+'.jpg'),quality=88)
-     d.update(segmentation_model=repos['sam'],segmentation_revision=revisions['sam'],segmentation_complete=True)
-     print(f'MASK {i}/{len(grounded)} {f.name} flags={len(d["qa_flags"])}',flush=True)
-    except Exception as e:failed(f,'sam',e)
-    store(f)
-   del model,processor,inputs,pred,all_masks,scores;release_memory(device)
- if args.stage!='regions':
+      best=int(scores[j].argmax());mask=all_masks[j,best].numpy().astype(bool);masks.append(mask)
+      dest=out/'masks'/f.stem/(c['id']+'.png');dest.parent.mkdir(parents=True,exist_ok=True)
+      save_image(Image.fromarray(mask.astype('uint8')*255),dest,'PNG')
+      c.update(mask=dest.relative_to(out).as_posix(),sam_predicted_iou=float(scores[j,best]),mask_area_fraction=float(mask.mean()))
+      if c['sam_predicted_iou']<.75:d['qa_flags'].append(c['id']+': low SAM score')
+      if mask.mean()<.005:d['qa_flags'].append(c['id']+': very small mask')
+     for j in range(len(masks)):
+      for k in range(j):
+       overlap=np.logical_and(masks[j],masks[k]).sum()/max(1,min(masks[j].sum(),masks[k].sum()))
+       if overlap>.25:d['qa_flags'].append(f'person_{k+1}/person_{j+1}: mask overlap {overlap:.2f}')
+    else:d['qa_flags'].append('No characters detected')
+    colors=[(255,80,70),(50,200,255),(100,240,100),(245,190,40),(220,90,240)];overlay=im.convert('RGBA')
+    for j,mask in enumerate(masks):
+     layer=Image.new('RGBA',im.size,colors[j%len(colors)]+(0,));layer.putalpha(Image.fromarray(mask.astype('uint8')*65));overlay=Image.alpha_composite(overlay,layer)
+    draw=ImageDraw.Draw(overlay)
+    for j,c in enumerate(d['characters']):
+     box=c['bbox_xyxy_pixels'];draw.rectangle(box,outline=colors[j%len(colors)],width=max(2,im.width//350));draw.text((box[0]+3,box[1]+3),c['id'],fill='white',stroke_width=2,stroke_fill='black')
+    overlay.thumbnail((1200,1200));save_image(overlay.convert('RGB'),out/'previews'/(f.stem+'.jpg'),'JPEG',quality=88)
+    d.update(segmentation_model=repos['sam'],segmentation_revision=revisions['sam'],segmentation_complete=True)
+    mark(f,'sam','complete')
+    print(f'MASK {i}/{len(grounded)} {f.name} flags={len(d["qa_flags"])}',flush=True)
+   except Exception as e:failed(f,'sam',e)
+   store(f)
+  del model,processor,inputs,pred,all_masks,scores;release_memory(device)
+ if jobs['caption']:
   path=model_path(args.models,'caption',args.profile);processor=AutoProcessor.from_pretrained(path,local_files_only=True)
   started=time.perf_counter()
   model_class=Qwen3VLForConditionalGeneration if args.profile=='compact' else LlavaForConditionalGeneration
   model=model_class.from_pretrained(path,local_files_only=True,dtype=dtype,device_map={'':device},attn_implementation='sdpa').eval()
   synchronize(device);load_seconds=time.perf_counter()-started
   inputs=ids=None
-  for i,f in enumerate(valid,1):
+  for i,f in enumerate(jobs['caption'],1):
+   mark(f,'caption','running')
    try:
     started=time.perf_counter()
     im=load_image(f)
@@ -188,9 +203,12 @@ def run_models(out,files,records,args,prompts):
     if generation_hit_limit(generated,args.caption_tokens,model.generation_config.eos_token_id):
      records[f.name]['raw_caption']=caption
      raise ValueError('Caption reached token limit without EOS; raw text retained in metadata, excluded from export. Increase --caption-tokens or shorten the prompt.')
-    dest=out/'captions'/(f.stem+'.txt');dest.write_bytes(caption.encode('utf-8'))
+    records[f.name]['caption_candidate_sha256']=hashlib.sha256(caption.encode('utf-8')).hexdigest()
+    mark(f,'caption','writing')
+    dest=out/'captions'/(f.stem+'.txt');atomic_write(dest,caption.encode('utf-8'))
     records[f.name].update(caption=caption,caption_model=repos['caption'],caption_revision=revisions['caption'],caption_precision=precision,device=device,caption_sha256=sha(dest),caption_seconds=elapsed,model_load_seconds=load_seconds,inference_image_size=list(im.size),generated_tokens=int(ids.shape[1]-inputs['input_ids'].shape[1]),memory_snapshot=memory_snapshot(device))
-    print(f'CAPTION {i}/{len(valid)} {f.name}: {elapsed:.2f}s',flush=True)
+    mark(f,'caption','complete')
+    print(f'CAPTION {i}/{len(jobs["caption"])} {f.name}: {elapsed:.2f}s',flush=True)
    except Exception as e:failed(f,'caption',e)
    finally:inputs=ids=None
    store(f)

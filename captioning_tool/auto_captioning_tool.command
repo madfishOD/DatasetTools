@@ -13,8 +13,17 @@ if [[ "$(uname -s)" != Darwin || "$(uname -m)" != arm64 ]]; then
 fi
 RUNTIME="$ROOT/runtime/mac"
 if [[ ! -x "$RUNTIME/bin/python" ]]; then "$UV" venv --python 3.13 "$RUNTIME"; fi
-"$UV" pip sync --python "$RUNTIME/bin/python" "$ROOT/requirements-mac.lock"
+"$UV" pip sync --python "$RUNTIME/bin/python" "$ROOT/requirements-mac.lock" "$ROOT/requirements-gui.txt"
 export PYTHONNOUSERSITE=1
+if [[ "${1:-}" == --gui ]]; then
+  shift
+  exec "$RUNTIME/bin/python" "$ROOT/gui.py" "$@"
+fi
+for argument in "$@"; do
+  if [[ "$argument" == --resume || "$argument" == --resume=* ]]; then
+    exec "$RUNTIME/bin/python" -u "$ROOT/auto_captioning_tool.py" "$@"
+  fi
+done
 if [[ $# -eq 0 ]]; then
   read -r -p 'Input image folder: ' INPUT_DIR
   exec "$RUNTIME/bin/python" -u "$ROOT/auto_captioning_tool.py" \

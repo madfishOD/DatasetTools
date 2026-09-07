@@ -1,5 +1,5 @@
 """OneTrainer export. Never edits image or caption content."""
-import hashlib, json, math, shutil
+import hashlib, json, math, shutil, os, tempfile
 from pathlib import Path
 HERE = Path(__file__).resolve().parent
 PROFILES = {
@@ -10,9 +10,17 @@ PROFILES = {
 }
 def sha(path):
  with Path(path).open('rb') as stream: return hashlib.file_digest(stream,'sha256').hexdigest()
-def save(path,data):
+def atomic_write(path,data):
  path=Path(path);path.parent.mkdir(parents=True,exist_ok=True)
- path.write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding='utf-8')
+ fd,temp=tempfile.mkstemp(prefix='.'+path.name+'.',suffix='.tmp',dir=path.parent)
+ try:
+  with os.fdopen(fd,'wb') as stream:
+   stream.write(data);stream.flush();os.fsync(stream.fileno())
+  os.replace(temp,path)
+ finally:
+  if os.path.exists(temp):os.unlink(temp)
+def save(path,data):
+ atomic_write(path,json.dumps(data,ensure_ascii=False,indent=2).encode('utf-8'))
 def merge(base,patch):
  for key,value in patch.items():
   if isinstance(value,dict) and isinstance(base.get(key),dict): merge(base[key],value)
@@ -33,9 +41,10 @@ def training_plan(count,family,target_steps=None,epochs=None):
    'Masks require review and are not used for masked training.']+
    (['Very small dataset; high repetition can overfit. Review checkpoints and reduce epochs.'] if 0<count<20 else []))
 
-def export_training(out,files,args):
+def export_training(out,files,args,path_root=None):
  dataset_only=getattr(args,'no_training_config',False)
  root=out/('dataset' if dataset_only else 'onetrainer');root.mkdir(exist_ok=False);data=root/'data';data.mkdir()
+ config_root=(path_root or out)/root.name
  included=[];excluded=[]
  for image in files:
   caption=out/'captions'/(image.stem+'.txt')
@@ -56,10 +65,10 @@ def export_training(out,files,args):
   preset=json.loads((HERE/'templates'/(args.family+'.json')).read_text(encoding='utf-8'))
   config=merge(defaults,preset)
   config.update(base_model_name=args.base_model or base,training_method='LORA',model_type=model,
-   concept_file_name=str(root/'concepts.json'),concepts=None,
-   workspace_dir=str(root/'workspace'),cache_dir=str(root/'cache'),
-   output_model_destination=str(root/'models/lora.safetensors'),
-   sample_definition_file_name=str(root/'samples.json'),samples=None,
+   concept_file_name=str(config_root/'concepts.json'),concepts=None,
+   workspace_dir=str(config_root/'workspace'),cache_dir=str(config_root/'cache'),
+   output_model_destination=str(config_root/'models/lora.safetensors'),
+   sample_definition_file_name=str(config_root/'samples.json'),samples=None,
    sample_after_unit='NEVER',backup_after_unit='NEVER',backup_before_save=False,
    save_every=1,save_every_unit='EPOCH',save_filename_prefix='auto_captioning_',
    batch_size=1,gradient_accumulation_steps=1,epochs=plan['epochs'],
@@ -69,7 +78,7 @@ def export_training(out,files,args):
    masked_training=False,train_dtype='BFLOAT_16',output_dtype='BFLOAT_16')
   config['optimizer'].update(optimizer='ADAMW',weight_decay=0.01,stochastic_rounding=True)
   concept=json.loads((HERE/'templates/concept.json').read_text(encoding='utf-8'))
-  concept.update(name='auto_captioning_tool',path=str(data),enabled=True,include_subdirectories=False,
+  concept.update(name='auto_captioning_tool',path=str(config_root/'data'),enabled=True,include_subdirectories=False,
    balancing=1.0,image_variations=1,text_variations=1)
   concept['text'].update(prompt_source='sample',enable_tag_shuffling=False)
   concept['image'].update(enable_random_flip=False,enable_fixed_flip=False)

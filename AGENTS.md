@@ -8,3 +8,10 @@ images for this purpose unless the user explicitly asks for visual review.
 Verify technical behavior instead: completion, errors, file formats and schemas,
 hashes, image/mask dimensions, coordinate bounds, timing, and memory metrics.
 Report technical success without claiming semantic or visual quality validation.
+
+# Interface language
+
+All application UI text must be in English, including labels, dialogs, tooltips,
+status messages, errors, and accessibility names. The conversation language does
+not determine the application language. User-provided captions and filenames
+retain their original language.
